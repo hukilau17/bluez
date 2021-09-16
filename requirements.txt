@@ -1,5 +1,4 @@
 discord.py>=1.7.3
 gunicorn
-recordclass
 youtube_dl
 ffmpeg
