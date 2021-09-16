@@ -191,6 +191,9 @@ class Player(object):
             if self.now_playing:
                 source = self.now_playing.get_audio(self.seek_pos or 0, self.tempo, self.bass,
                                                     self.nightcore, self.slowed, self.volume)
+                if isinstance(source, Exception):
+                    await self.play_next(source)
+                    return
                 self.voice_client.play(source, after=self._play_next_callback)
                 self.last_started_playing = time.time() - (self.seek_pos or 0)
                 self.last_paused = None

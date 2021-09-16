@@ -46,6 +46,7 @@ class Song(object):
         self.data = data
         self.user = user
         self.tempo = 1.0
+        self.error = None
         self.init()
 
     def init(self):
@@ -55,7 +56,11 @@ class Song(object):
         self.channel = self.data.get('channel', 'None')
         if 'extra_info_hack' in self.data:
             self.url = None
-            self.link = self.data['extra_info_hack']['webpage_url']
+            self.link = None
+            if self.data.get('ie_key') == 'Youtube':
+                self.link = 'https://www.youtube.com/watch?v=%s' % self.data['id']
+            else:
+                self.link = self.data.get('url')
         else:
             self.url = self.data['url']
             self.link = self.data['webpage_url']
@@ -63,7 +68,10 @@ class Song(object):
     def process(self):
         if (self.url is None) and ('extra_info_hack' in self.data):
             extra_info = self.data.pop('extra_info_hack')
-            self.data = ydl.process_ie_result(self.data, download=False, extra_info=extra_info)
+            try:
+                self.data = ydl.process_ie_result(self.data, download=False, extra_info=extra_info)
+            except Exception as e:
+                self.error = e
             self.init()
 
     def __eq__(self, other):
@@ -75,6 +83,8 @@ class Song(object):
 
     def get_audio(self, seek_pos=0, tempo=1.0, bass=1, nightcore=False, slowed=False, volume=1.0):
         self.process()
+        if self.error:
+            return self.error
         before_options = '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
         options = '-vn'
         self.adjusted_length = self.length
