@@ -60,19 +60,21 @@ class Song(object):
             self.url = self.data['url']
             self.link = self.data['webpage_url']
 
+    def process(self):
+        if (self.url is None) and ('extra_info_hack' in self.data):
+            extra_info = self.data.pop('extra_info_hack')
+            self.data = ydl.process_ie_result(self.data, download=False, extra_info=extra_info)
+            self.init()
+
     def __eq__(self, other):
         return isinstance(other, Song) and (self.url == other.url)
-
 
     def get_adjusted_tempo(self, tempo=1.0, nightcore=False, slowed=False):
         return tempo * (1.43 if nightcore else 1.0) * (0.5 if slowed else 1.0)
 
 
     def get_audio(self, seek_pos=0, tempo=1.0, bass=1, nightcore=False, slowed=False, volume=1.0):
-        if (self.url is None) and ('extra_info_hack' in self.data):
-            extra_info = self.data.pop('extra_info_hack')
-            self.data = ydl.process_ie_result(self.data, download=False, extra_info=extra_info)
-            self.init()
+        self.process()
         before_options = '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
         options = '-vn'
         self.adjusted_length = self.length
@@ -145,13 +147,19 @@ async def songs_from_url(url, user, maxn):
 async def songs_from_youtube(query, user, maxn):
     data = (await extract_info('ytsearch%d:%s' % (maxn, query)))
     entries = data['entries']
-    return [Song(entry, user) for entry in entries]
+    songs = [Song(entry, user) for entry in entries]
+    for song in songs:
+        song.process()
+    return songs
 
 
 async def songs_from_soundcloud(query, user, maxn):
     data = (await extract_info('scsearch%d:%s' % (maxn, query)))
     entries = data['entries']
-    return [Song(entry, user) for entry in entries]
+    songs = [Song(entry, user) for entry in entries]
+    for song in songs:
+        song.process()
+    return songs
 
 
 
