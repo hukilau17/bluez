@@ -725,8 +725,14 @@ class Player(object):
                         break
                 else:
                     numbers = sorted(set(numbers), reverse=True)
+                    removed = []
                     for n in numbers:
+                        removed.append(self.queue[n-1])
                         del self.queue[n-1]
+                    if len(removed) > 1:
+                        await message.channel.send('**:white_check_mark: Removed `%d` songs**' % len(removed))
+                    elif len(removed) == 1:
+                        await message.channel.send('**:white_check_mark: Removed `%s`**' % removed[0].name)
 
 
     async def command_clear(self, message):
