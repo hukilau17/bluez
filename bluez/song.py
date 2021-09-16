@@ -148,8 +148,8 @@ async def songs_from_youtube(query, user, maxn):
     data = (await extract_info('ytsearch%d:%s' % (maxn, query)))
     entries = data['entries']
     songs = [Song(entry, user) for entry in entries]
-    for song in songs:
-        song.process()
+    if maxn == 1:
+        songs[0].process()
     return songs
 
 
@@ -157,8 +157,8 @@ async def songs_from_soundcloud(query, user, maxn):
     data = (await extract_info('scsearch%d:%s' % (maxn, query)))
     entries = data['entries']
     songs = [Song(entry, user) for entry in entries]
-    for song in songs:
-        song.process()
+    if maxn == 1:
+        songs[0].process()
     return songs
 
 
