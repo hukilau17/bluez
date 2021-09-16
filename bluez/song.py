@@ -7,6 +7,21 @@ import re
 
 from bluez.util import *
 
+PLAYLIST_HACK = True # implement at your own risk
+
+
+
+if PLAYLIST_HACK:
+    
+    def _process_iterable_entry(self, entry, download, extra_info):
+        result = entry.copy()
+        result['extra_info_hack'] = extra_info.copy()
+        return result
+        
+    youtube_dl.YoutubeDL._YoutubeDL__process_iterable_entry = _process_iterable_entry
+
+    
+
 
 ydl = youtube_dl.YoutubeDL({
     'format': 'bestaudio/best',
@@ -30,13 +45,20 @@ class Song(object):
     def __init__(self, data, user):
         self.data = data
         self.user = user
-        self.name = data.get('title', '[no title]')
-        self.length = self.adjusted_length = data.get('duration', 0)
         self.tempo = 1.0
-        self.thumbnail = data.get('thumbnail', None)
-        self.channel = data.get('channel', 'None')
-        self.url = self.data['url']
-        self.link = self.data['webpage_url']
+        self.init()
+
+    def init(self):
+        self.name = self.data.get('title', '[no title]')
+        self.length = self.adjusted_length = self.data.get('duration', 0)
+        self.thumbnail = self.data.get('thumbnail', None)
+        self.channel = self.data.get('channel', 'None')
+        if 'extra_info_hack' in self.data:
+            self.url = None
+            self.link = self.data['extra_info_hack']['webpage_url']
+        else:
+            self.url = self.data['url']
+            self.link = self.data['webpage_url']
 
     def __eq__(self, other):
         return isinstance(other, Song) and (self.url == other.url)
@@ -47,6 +69,10 @@ class Song(object):
 
 
     def get_audio(self, seek_pos=0, tempo=1.0, bass=1, nightcore=False, slowed=False, volume=1.0):
+        if (self.url is None) and ('extra_info_hack' in self.data):
+            extra_info = self.data.pop('extra_info_hack')
+            self.data = ydl.process_ie_result(self.data, download=False, extra_info=extra_info)
+            self.init()
         before_options = '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
         options = '-vn'
         self.adjusted_length = self.length
