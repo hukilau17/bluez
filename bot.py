@@ -102,7 +102,7 @@ or the `Manage Channels` permission to use it**' % player.djrole)
             await message.add_reaction('\u25b6')
             # Enter event loop to wait a certain amount of time (30 seconds) for the user to scroll through the list
             def check(reaction, user):
-                return (reaction.message == message) and (reaction.emoji in ('\u25c0', '\u25b6'))
+                return (reaction.message == message) and (reaction.emoji in ('\u25c0', '\u25b6')) and (user != self.user)
             while True:
                 try:
                     reaction, user = (await self.wait_for('reaction_add', timeout=30, check=check))

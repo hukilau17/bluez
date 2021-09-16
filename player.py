@@ -1201,7 +1201,7 @@ Volume - %d''' % (self.tempo, self.bass, 'On' if self.nightcore else 'Off',
             elif member in self.votes:
                 self.votes.remove(member)
             elif len(self.votes) >= int(.75 * (len(self.voice_channel.members) - 1)):
-                await self.skip(message.channel)
+                await self.skip(self.text_channel)
 
 
 
