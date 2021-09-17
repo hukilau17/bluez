@@ -39,7 +39,7 @@ class Bot(discord.Client):
         for command in self.player_commands:
             self.slash.add_slash_command(getattr(player, 'command_' + command), command,
                                          guild_ids=[guild.id], options=self.command_options.get(command))
-        for alias, command in self.command_aliases.items():
+        for alias, command in self.slash_aliases.items():
             self.slash.add_slash_command(getattr(player, 'command_' + command), alias,
                                          guild_ids=[guild.id], options=self.command_options.get(command))
         self.players[guild.id] = player
@@ -308,7 +308,7 @@ or the `Manage Channels` permission to use it**' % player.djrole)
 
 
 
-    command_aliases = {
+    slash_aliases = {
         'summon'    : 'join',
         'playnow'   : 'playskip',
         'find'      : 'search',
