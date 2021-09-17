@@ -58,7 +58,7 @@ class Bot(discord.Client):
         if player and player.djonly and not player.is_dj(message.author):
             await message.channel.send('**:x: The bot is currently in DJ only mode, you must have a role named `%s` \
 or the `Manage Channels` permission to use it**' % player.djrole)
-        command = message.content[prefix:].split(None, 1)[0].lower()
+        command = message.content[len(prefix):].split(None, 1)[0].lower()
         command = self.aliases.get(command, command)
         if command in self.global_commands:
             # If it's a global command, invoke it
