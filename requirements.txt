@@ -4,3 +4,4 @@ youtube_dl
 ffmpeg
 pynacl
 lyricsgenius
+discord-py-slash-command
