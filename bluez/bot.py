@@ -31,12 +31,6 @@ class Bot(discord.Client):
     def run(self):
         # Run the bot
         discord.Client.run(self, os.getenv('BLUEZ_TOKEN'))
-
-
-    def setup_guild(self, guild):
-        # Create a Player for a specific guild, and add slash commands
-        player = Player(self, guild)
-        self.players[guild.id] = player
         
 
 
