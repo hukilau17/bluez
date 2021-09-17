@@ -218,7 +218,7 @@ class Player(object):
         # Does the same thing as play_next() if there's not
         # currently a song playing.
         if self.voice_client is not None:
-            if self.voice_client.is_playing():
+            if self.voice_client.is_playing() or self.voice_client.is_paused():
                 self.voice_client.stop()
                 await channel.send('***:fast_forward: Skipped :thumbsup:***')
             else:
@@ -228,23 +228,23 @@ class Player(object):
     async def wake_up(self):
         # Play a song if nothing is currently playing
         # Do nothing if there's already a song playing
-        if not self.voice_client.is_playing():
+        if not (self.voice_client.is_playing() or self.voice_client.is_paused()):
             await self.play_next()
 
 
 
     async def seek(self, pos, channel):
         # Seek to the given position in the currently playing song
-        if (self.voice_client is not None) and self.voice_client.is_playing():
-            self.seek_pos = pos
-            self.voice_client.stop()
-            await channel.send('**:thumbsup: Seeking to time `%s`**' % format_time(pos))
+        if (self.voice_client is not None) and (self.voice_client.is_playing() or self.voice_client.is_paused()):
+                self.seek_pos = pos
+                self.voice_client.stop()
+                await channel.send('**:thumbsup: Seeking to time `%s`**' % format_time(pos))
 
 
     def update_audio(self):
         # Called when the audio effects (volume, speed, bass, etc.) are changed
         # Effectively the same as a "seek" to the current time
-        if (self.voice_client is not None) and self.voice_client.is_playing():
+        if (self.voice_client is not None) and (self.voice_client.is_playing() or self.voice_client.is_paused()):
             self.seek_pos = self.get_current_time()
             self.seek_pos *= self.now_playing.tempo / self.now_playing.get_adjusted_tempo(self.tempo, self.nightcore, self.slowed)
             self.voice_client.stop()
@@ -1202,14 +1202,14 @@ Volume - %d''' % (self.tempo, self.bass, 'On' if self.nightcore else 'Off',
     async def notify_user_leave(self, member):
         if self.voice_channel is not None:
             if len(self.voice_channel.members) == 1:
-                if self.voice_client.is_playing():
+                if self.voice_client.is_playing() and not self.voice_client.is_paused():
                     self.empty_paused = True
                     self.last_paused = time.time()
                     self.votes = []
                     self.voice_client.pause()
             elif member in self.votes:
                 self.votes.remove(member)
-            elif len(self.votes) >= int(.75 * (len(self.voice_channel.members) - 1)):
+            elif self.votes and (len(self.votes) >= int(.75 * (len(self.voice_channel.members) - 1))):
                 await self.skip(self.text_channel)
 
 

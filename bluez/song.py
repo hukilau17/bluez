@@ -51,7 +51,7 @@ class Song(object):
 
     def init(self):
         self.name = self.data.get('title', '[no title]')
-        self.length = self.adjusted_length = self.data.get('duration', 0)
+        self.length = self.adjusted_length = self.data.get('duration') or 0
         self.thumbnail = self.data.get('thumbnail', None)
         self.channel = self.data.get('channel', 'None')
         if 'extra_info_hack' in self.data:

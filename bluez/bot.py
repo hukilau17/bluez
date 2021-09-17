@@ -3,9 +3,9 @@
 import discord
 import asyncio
 import os
+import lyricsgenius
 
 from bluez.player import Player
-
 
 
 
@@ -22,6 +22,7 @@ class Bot(discord.Client):
         intents.members = True
         discord.Client.__init__(self, intents=intents)
         self.players = {}
+        self.genius = lyricsgenius.Genius()
         
 
     def run(self):
@@ -57,22 +58,17 @@ class Bot(discord.Client):
         if player and player.djonly and not player.is_dj(message.author):
             await message.channel.send('**:x: The bot is currently in DJ only mode, you must have a role named `%s` \
 or the `Manage Channels` permission to use it**' % player.djrole)
-        command = message.content[len(player.prefix):].split(None, 1)[0].lower()
+        command = message.content[prefix:].split(None, 1)[0].lower()
         command = self.aliases.get(command, command)
         if command in self.global_commands:
             # If it's a global command, invoke it
-            if hasattr(self, 'command_' + command):
-                await getattr(self, 'command_' + command)(message)
-            else:
-                await message.channel.send('**:warning: This command is not supported yet.**')
+            await getattr(self, 'command_' + command)(message)
         if command in self.player_commands:
             # If it's a bot command, invoke it
             if player is None:
                 await message.channel.send('**:warning: This command cannot be used in private messages**')
-            elif hasattr(player, 'command_' + command):
-                await getattr(player, 'command_' + command)(message)
             else:
-                await message.channel.send('**:warning: This command is not supported yet.**')
+                await getattr(player, 'command_' + command)(message)
 
 
 
@@ -182,7 +178,7 @@ or the `Manage Channels` permission to use it**' % player.djrole)
         
     
 
-    global_commands = ('lyrics', 'invite', 'info', 'shard', 'ping', 'aliases') # mostly unimplemented/unnecessary for now
+    global_commands = ('lyrics', 'invite', 'info', 'ping', 'aliases') # mostly unimplemented/unnecessary for now
     
     player_commands = ('join', 'play', 'playtop', 'playskip', 'search', 'soundcloud',
                        'nowplaying', 'grab', 'seek', 'rewind', 'forward', 'replay',
@@ -195,7 +191,7 @@ or the `Manage Channels` permission to use it**' % player.djrole)
 
     async def command_aliases(self, message):
         aliases = {}
-        for key, value in self.aliases:
+        for key, value in self.aliases.items():
             if value not in aliases:
                 aliases[value] = []
             aliases[value].append(key)
@@ -214,6 +210,48 @@ or the `Manage Channels` permission to use it**' % player.djrole)
 
     async def command_ping(self, message):
         await message.channel.send('**Howdy.**')
+
+
+    async def command_info(self, message):
+        embed = discord.Embed(title='About Bluez',
+                              description='''Bluez is a personal-use, open source music bot implemented in Python by Matthew Kroesche.
+[Source](https://github.com/hukilau17/bluez)''')
+        await message.channel.send(embed=embed)
+
+
+    async def command_invite(self, message):
+        await message.channel.send('**:no_entry_sign: Do not add Bluez to other servers, since it is currently in beta and strictly \
+for personal use. Source code is freely available online: `https://github.com/hukilau17/bluez`**')
+
+
+
+    async def command_lyrics(self, message):
+        if getattr(message, 'guild', None):
+            player = self.players[message.guild.id]
+            prefix = player.prefix
+        else:
+            player = None
+            prefix = '!'
+        try:
+            search_term = message.content[len(prefix):].split(None, 1)[1]
+        except IndexError:
+            search_term = None
+        if not search_term:
+            if player:
+                if (await player.ensure_playing(message.author, message.channel)):
+                    search_term = player.now_playing.name
+                else:
+                    return
+            else:
+                await message.channel.send('**:x: I am not currently playing anything.**')
+                return
+        song = self.genius.search_song(search_term)
+        if song:
+            embed = discord.Embed(title='%s - %s' % (song.artist, song.title),
+                                  description=song.lyrics)
+            await message.channel.send(embed=embed)
+        else:
+            await message.channel.send('**:x: There were no results matching the query**')
 
 
 
