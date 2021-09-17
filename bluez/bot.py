@@ -4,6 +4,7 @@ import discord
 import asyncio
 import os
 import lyricsgenius
+import discord_slash
 
 from bluez.player import Player
 
@@ -23,16 +24,39 @@ class Bot(discord.Client):
         discord.Client.__init__(self, intents=intents)
         self.players = {}
         self.genius = lyricsgenius.Genius()
+        self.slash = discord_slash.SlashCommand(self, sync_commands=True)
         
+
 
     def run(self):
         # Run the bot
         discord.Client.run(self, os.getenv('BLUEZ_TOKEN'))
 
 
+    def setup_guild(self, guild):
+        # Create a Player for a specific guild, and add slash commands
+        player = Player(self, guild)
+        for command in self.player_commands:
+            self.slash.add_slash_command(getattr(player, 'command_' + command), command,
+                                         guild_ids=[guild.id], options=self.command_options.get(command))
+        for alias, command in self.command_aliases.items():
+            self.slash.add_slash_command(getattr(player, 'command_' + command), alias,
+                                         guild_ids=[guild.id], options=self.command_options.get(command))
+        self.players[guild.id] = player
+        
+
+
     async def on_ready(self):
+        # Called when the bot comes online
+        for command in self.global_commands:
+            self.slash.add_slash_command(getattr(self, 'command_' + command), command, options=self.command_options.get(command))
         for guild in self.guilds:
-            self.players[guild.id] = Player(self, guild)
+            self.setup_guild(guild)
+
+
+    async def on_guild_join(self, guild):
+        # Called when the bot joins a guild
+        self.setup_guild(guild)
 
 
 
@@ -90,10 +114,11 @@ or the `Manage Channels` permission to use it**' % player.djrole)
 
 
 
-    async def post_multipage_embed(self, embeds, channel):
-        message = (await channel.send(embed=embeds[0]))
+    async def post_multipage_embed(self, embeds, channel, start_index=0):
+        start_index = max(min(start_index, len(embeds)-1), 0)
+        message = (await channel.send(embed=embeds[start_index]))
         if len(embeds) > 1:
-            current_page = 0
+            current_page = start_index
             await message.add_reaction('\u25c0')
             await message.add_reaction('\u25b6')
             # Enter event loop to wait a certain amount of time (30 seconds) for the user to scroll through the list
@@ -188,8 +213,127 @@ or the `Manage Channels` permission to use it**' % player.djrole)
                        'speed', 'bass', 'nightcore', 'slowed', 'volume', 'prune')
 
 
+    command_options = {
+        'lyrics':       [{'name': 'song name',
+                          'description': 'the name of the song to show the lyrics for',
+                          'type': discord_slash.SlashCommandOptionType.STRING,
+                          'required': False,
+                          'choices': []}],
+        'play':         [{'name': 'link/query',
+                          'description': 'the name or url of the song to play',
+                          'type': discord_slash.SlashCommandOptionType.STRING,
+                          'required': True,
+                          'choices': []}],
+        'playtop':      [{'name': 'link/query',
+                          'description': 'the name or url of the song to play',
+                          'type': discord_slash.SlashCommandOptionType.STRING,
+                          'required': True,
+                          'choices': []}],
+        'playskip':     [{'name': 'link/query',
+                          'description': 'the name or url of the song to play',
+                          'type': discord_slash.SlashCommandOptionType.STRING,
+                          'required': True,
+                          'choices': []}],
+        'search':       [{'name': 'query',
+                          'description': 'the name of the song to seearch for',
+                          'type': discord_slash.SlashCommandOptionType.STRING,
+                          'required': True,
+                          'choices': []}],
+        'soundcloud':   [{'name': 'link/query',
+                          'description': 'the name or url of the song to play',
+                          'type': discord_slash.SlashCommandOptionType.STRING,
+                          'required': True,
+                          'choices': []}],
+        'seek':         [{'name': 'time',
+                          'description': 'the time to seek to',
+                          'type': discord_slash.SlashCommandOptionType.STRING,
+                          'required': True,
+                          'choices': []}],
+        'rewind':       [{'name': 'time',
+                          'description': 'the amount of time to rewind by',
+                          'type': discord_slash.SlashCommandOptionType.STRING,
+                          'required': True,
+                          'choices': []}],
+        'forward':      [{'name': 'time',
+                          'description': 'the amount of time to skip forward by',
+                          'type': discord_slash.SlashCommandOptionType.STRING,
+                          'required': True,
+                          'choices': []}],
+        'queue':        [{'name': 'page',
+                          'description': 'the page number to show',
+                          'type': discord_slash.SlashCommandOptionType.INTEGER,
+                          'required': False,
+                          'choices': []}],
+        'move':         [{'name': 'old position',
+                          'description': 'the old position of the song to move in the queue',
+                          'type': discord_slash.SlashCommandOptionType.INTEGER,
+                          'required': True,
+                          'choices': []},
+                         {'name': 'new position',
+                          'description': 'the new position of the song to move in the queue',
+                          'type': discord_slash.SlashCommandOptionType.INTEGER,
+                          'required': False,
+                          'choices': []}],
+        'skipto':       [{'name': 'position',
+                          'description': 'the position of the song to skip to',
+                          'type': discord_slash.SlashCommandOptionType.INTEGER,
+                          'required': True,
+                          'choices': []}],
+        'remove':       [{'name': 'number',
+                          'description': 'the position of the song to remove from the queue',
+                          'type': discord_slash.SlashCommandOptionType.INTEGER,
+                          'required': True,
+                          'choices': []}],
+        'clear':        [{'name': 'user',
+                          'description': 'clear only songs queued by this user',
+                          'type': discord_slash.SlashCommandOptionType.USER,
+                          'required': False,
+                          'choices': []}],
+        'speed':        [{'name': 'speed',
+                          'description': 'the playback speed',
+                          'type': discord_slash.SlashCommandOptionType.FLOAT,
+                          'required': False,
+                          'choices': []}],
+        'bass':         [{'name': 'bass',
+                          'description': 'the bass intensity',
+                          'type': discord_slash.SlashCommandOptionType.INTEGER,
+                          'required': False,
+                          'choices': []}],
+        'volume':       [{'name': 'volume',
+                          'description': 'the playback volume',
+                          'type': discord_slash.SlashCommandOptionType.INTEGER,
+                          'required': False,
+                          'choices': []}],
+        }
+
+
+
+    command_aliases = {
+        'summon'    : 'join',
+        'playnow'   : 'playskip',
+        'find'      : 'search',
+        'save'      : 'grab',
+        'repeat'    : 'loop',
+        'skip'      : 'voteskip',
+        'stop'      : 'pause',
+        'continue'  : 'resume',
+        'dc'        : 'disconnect',
+        'leave'     : 'disconnect',
+        'random'    : 'shuffle',
+        'weeb'      : 'nightcore',
+        'purge'     : 'prune',
+        'clean'     : 'prune',
+        'links'     : 'invite',
+        }
+
+
+
+    # Global commands
+
 
     async def command_aliases(self, message):
+        '''List all command aliases'''
+        # !aliases
         aliases = {}
         for key, value in self.aliases.items():
             if value not in aliases:
@@ -209,10 +353,14 @@ or the `Manage Channels` permission to use it**' % player.djrole)
 
 
     async def command_ping(self, message):
+        '''Check the bot's response time to Discord'''
+        # !ping
         await message.channel.send('**Howdy.**')
 
 
     async def command_info(self, message):
+        '''Show information about Bluez'''
+        # !info
         embed = discord.Embed(title='About Bluez',
                               description='''Bluez is a personal-use, open source music bot implemented in Python by Matthew Kroesche.
 [Source](https://github.com/hukilau17/bluez)''')
@@ -220,22 +368,27 @@ or the `Manage Channels` permission to use it**' % player.djrole)
 
 
     async def command_invite(self, message):
+        '''Show the source link for Bluez'''
+        # !invite
         await message.channel.send('**:no_entry_sign: Do not add Bluez to other servers, since it is currently in beta and strictly \
 for personal use. Source code is freely available online: `https://github.com/hukilau17/bluez`**')
 
 
 
-    async def command_lyrics(self, message):
+    async def command_lyrics(self, message, search_term=None):
+        '''Get the lyrics of a song (by default the currently playing song)'''
+        # !lyrics
         if getattr(message, 'guild', None):
             player = self.players[message.guild.id]
             prefix = player.prefix
         else:
             player = None
             prefix = '!'
-        try:
-            search_term = message.content[len(prefix):].split(None, 1)[1]
-        except IndexError:
-            search_term = None
+        if (search_term is None) and isinstance(message, discord.Message):
+            try:
+                search_term = message.content[len(prefix):].split(None, 1)[1]
+            except IndexError:
+                search_term = None
         if not search_term:
             if player:
                 if (await player.ensure_playing(message.author, message.channel)):
@@ -248,10 +401,19 @@ for personal use. Source code is freely available online: `https://github.com/hu
         song = self.genius.search_song(search_term)
         if song:
             embed = discord.Embed(title='%s - %s' % (song.artist, song.title),
-                                  description=song.lyrics)
+                                  description=song.lyrics,
+                                  thumbnail=song.art_image_thumbnail_url)
             await message.channel.send(embed=embed)
         else:
             await message.channel.send('**:x: There were no results matching the query**')
+
+
+
+
+
+
+
+
 
 
 

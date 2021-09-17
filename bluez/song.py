@@ -75,7 +75,7 @@ class Song(object):
             self.init()
 
     def __eq__(self, other):
-        return isinstance(other, Song) and (self.url == other.url)
+        return isinstance(other, Song) and (self.name == other.name)
 
     def get_adjusted_tempo(self, tempo=1.0, nightcore=False, slowed=False):
         return tempo * (1.43 if nightcore else 1.0) * (0.5 if slowed else 1.0)

@@ -268,9 +268,12 @@ class Player(object):
                 progress_bar[min(int((time * 30) / song.adjusted_length), 29)] = '\U0001f518'
             progress_bar = '`%s`' % ''.join(progress_bar)
             if time is None:
-                time_message = '`Not started yet`'
+                time_message = 'Not started yet'
             else:
-                time_message = '`%s / %s`' % (format_time(time), format_time(song.adjusted_length))
+                time_message = '%s / %s' % (format_time(time), format_time(song.adjusted_length))
+                if self.voice_client.is_paused():
+                    time_message += ' (paused)'
+            time_message = '`%s`' % time_message
             embed = discord.Embed(title='Now Playing \u266a', description = \
                                   format_link(song) + '\n\n' + \
                                   progress_bar + '\n\n' + \
@@ -281,7 +284,7 @@ class Player(object):
 
 
 
-    async def queue_message(self, channel):
+    async def queue_message(self, channel, start_index=0):
         # Post the queue to the appropriate channel
         if not (await self.ensure_queue(None, channel)):
             return
@@ -309,7 +312,7 @@ class Player(object):
                             ':white_check_mark:' if self.queue_looping else ':x:')
             embed.description = description
             embeds.append(embed)
-        await self.client.post_multipage_embed(embeds, channel)
+        await self.client.post_multipage_embed(embeds, channel, start_index)
 
 
 
@@ -354,19 +357,22 @@ class Player(object):
 
     ##### Bot command implementation #####
 
+    # The argument `message` is either a discord.Message (if the command is invoked in the
+    # traditional way using the prefix) or a discord_slash.SlashContext (if the command
+    # is invoked by a slash command)
+
 
     async def command_join(self, message):
+        '''Summon the bot to the voice channel you are in'''
         # !join
         await self.ensure_joined(message.author, message.channel)
 
 
-    async def command_play(self, message):
+    async def command_play(self, message, song_info=None):
+        '''Play a song with the given name or url'''
         # !play
         if (await self.ensure_joined(message.author, message.channel)):
-            try:
-                song_info = message.content[len(self.prefix):].split(None, 1)[1]
-            except IndexError:
-                song_info = None
+            song_info = self.get_string(message, song_info)
             if not song_info:
                 return
             if is_url(song_info):
@@ -383,16 +389,14 @@ class Player(object):
             await self.wake_up()
 
 
-    async def command_playtop(self, message):
+    async def command_playtop(self, message, song_info=None):
+        '''Add a song with the given name/url to the top of the queue'''
         # !playtop
         ensure = (self.ensure_dj if self.queue else self.ensure_joined)
         # you need DJ permissions to insert music into the queue ahead of other people's songs,
         # but not if the queue is empty
         if (await ensure(message.author, message.channel)):
-            try:
-                song_info = message.content[len(self.prefix):].split(None, 1)[1]
-            except IndexError:
-                song_info = None
+            song_info = self.get_string(message, song_info)
             if not song_info:
                 return
             if is_url(song_info):
@@ -408,16 +412,14 @@ class Player(object):
             await self.wake_up()
 
 
-    async def command_playskip(self, message):
+    async def command_playskip(self, message, song_info=None):
+        '''Skip the current song and play the song with the given name/url'''
         # !playskip
         ensure = (self.ensure_dj if self.queue or self.now_playing else self.ensure_joined)
         # you need DJ permissions to insert music into the queue ahead of other people's songs,
         # or to skip other people's songs
         if (await ensure(message.author, message.channel)):
-            try:
-                song_info = message.content[len(self.prefix):].split(None, 1)[1]
-            except IndexError:
-                song_info = None
+            song_info = self.get_string(message, song_info)
             if not song_info:
                 return
             if is_url(song_info):
@@ -433,16 +435,14 @@ class Player(object):
             await self.skip(message.channel)
 
 
-    async def command_search(self, message):
+    async def command_search(self, message, query=None):
+        '''Search from YouTube for a song using the query, and return the top 10 results'''
         # !search
         if (await self.ensure_joined(message.author, message.channel)):
             if message.channel in self.searching_channels:
                 await message.channel.send('**:warning: Search is already running in this channel, type `cancel` to exit**')
                 return
-            try:
-                query = message.content[len(self.prefix):].split(None, 1)[1]
-            except IndexError:
-                query = None
+            query = self.get_string(message, query)
             if not query:
                 return
             songs = (await songs_from_youtube(query, message.author, 10))
@@ -481,13 +481,11 @@ class Player(object):
             
 
 
-    async def command_soundcloud(self, message):
+    async def command_soundcloud(self, message, song_info=None):
+        '''Play a song from SoundCloud with the given name/url'''
         # !soundcloud
         if (await self.ensure_joined(message.author, message.channel)):
-            try:
-                song_info = message.content[len(self.prefix):].split(None, 1)[1]
-            except IndexError:
-                song_info = None
+            song_info = self.get_string(message, song_info)
             if not song_info:
                 return
             if is_url(song_info):
@@ -505,67 +503,67 @@ class Player(object):
 
 
     async def command_nowplaying(self, message):
+        '''Show what song is currently playing'''
         # !nowplaying
         if (await self.ensure_playing(message.author, message.channel)):
             await self.np_message(message.channel)
 
 
     async def command_grab(self, message):
+        '''Save the song currently playing to your DMs'''
         # !grab
         if (await self.ensure_playing(message.author, message.channel)):
             await self.np_message(message.author.dm_channel)
 
 
-    async def command_seek(self, message):
+    async def command_seek(self, message, time=None):
+        '''Seek to a certain point in the current track'''
         # !seek
         if (await self.ensure_playing(message.author, message.channel)) and \
            (await self.ensure_dj(message.author, message.channel)):
-            try:
-                time = message.content[len(self.prefix):].split(None, 1)[1]
-            except IndexError:
-                time = ''
-            time = (await self.parse_time(time, message.channel))
+            time = self.get_string(message, time)
             if time is not None:
-                time = max(time, 0)
-                if time > self.now_playing.adjusted_length:
-                    await self.skip(message.channel)
-                else:
-                    await self.seek(time, message.channel)
+                time = (await self.parse_time(time, message.channel))
+                if time is not None:
+                    time = max(time, 0)
+                    if time > self.now_playing.adjusted_length:
+                        await self.skip(message.channel)
+                    else:
+                        await self.seek(time, message.channel)
 
 
-    async def command_rewind(self, message):
+    async def command_rewind(self, message, time=None):
+        '''Rewind by a certain amount of time in the current track'''
         # !rewind
         if (await self.ensure_playing(message.author, message.channel)) and \
            (await self.ensure_dj(message.author, message.channel)):
-            try:
-                time = message.content[len(self.prefix):].split(None, 1)[1]
-            except IndexError:
-                time = ''
-            time = (await self.parse_time(time, message.channel))
+            time = self.get_string(message, time)
             if time is not None:
-                time = self.get_current_time() - time
-                time = max(time, 0)
-                await self.seek(time, message.channel)
-
-
-    async def command_forward(self, message):
-        # !forward
-        if (await self.ensure_playing(message.author, message.channel)) and \
-           (await self.ensure_dj(message.author, message.channel)):
-            try:
-                time = message.content[len(self.prefix):].split(None, 1)[1]
-            except IndexError:
-                time = ''
-            time = (await self.parse_time(time, message.channel))
-            if time is not None:
-                time = self.get_current_time() + time
-                if time > self.now_playing.adjusted_length:
-                    await self.skip(message.channel)
-                else:
+                time = (await self.parse_time(time, message.channel))
+                if time is not None:
+                    time = self.get_current_time() - time
+                    time = max(time, 0)
                     await self.seek(time, message.channel)
 
 
+    async def command_forward(self, message, time=None):
+        '''Skip forward by a certain amount of time in the current track'''
+        # !forward
+        if (await self.ensure_playing(message.author, message.channel)) and \
+           (await self.ensure_dj(message.author, message.channel)):
+            time = self.get_string(message, time)
+            if time is not None:
+                time = (await self.parse_time(time, message.channel))
+                if time is not None:
+                    time = self.get_current_time() + time
+                    if time > self.now_playing.adjusted_length:
+                        await self.skip(message.channel)
+                    else:
+                        await self.seek(time, message.channel)
+
+
     async def command_replay(self, message):
+        '''Reset the progress of the current song'''
         # !replay
         if (await self.ensure_playing(message.author, message.channel)) and \
            (await self.ensure_dj(message.author, message.channel)):
@@ -573,6 +571,7 @@ class Player(object):
 
 
     async def command_loop(self, message):
+        '''Toggle looping for the currently playing song'''
         # !loop
         if (await self.ensure_playing(message.author, message.channel)) and \
            (await self.ensure_dj(message.author, message.channel)):
@@ -584,6 +583,7 @@ class Player(object):
             
 
     async def command_voteskip(self, message):
+        '''Vote to skip the currently playing song'''
         # !voteskip
         if (await self.ensure_playing(message.author, message.channel)) and \
            (await self.ensure_joined(message.author, message.channel)):
@@ -603,6 +603,7 @@ class Player(object):
                     
 
     async def command_forceskip(self, message):
+        '''Skip the currently playing song immediately'''
         # !forceskip
         if (await self.ensure_playing(message.author, message.channel)) and \
            (await self.ensure_dj(message.author, message.channel)):
@@ -610,6 +611,7 @@ class Player(object):
 
 
     async def command_pause(self, message):
+        '''Pause the currently playing track'''
         # !pause
         if (await self.ensure_playing(message.author, message.channel)) and \
            (await self.ensure_dj(message.author, message.channel)):
@@ -622,6 +624,7 @@ class Player(object):
 
 
     async def command_resume(self, message):
+        '''Resume paused music'''
         # !resume
         if (await self.ensure_playing(message.author, message.channel)) and \
            (await self.ensure_dj(message.author, message.channel)):
@@ -635,17 +638,23 @@ class Player(object):
             
 
     async def command_disconnect(self, message):
+        '''Disconnect the bot from the voice channel it is in'''
         # !disconnect
         if (await self.ensure_dj(message.author, message.channel, need_join=False)):
             await self.disconnect(message.channel)
 
 
-    async def command_queue(self, message):
+    async def command_queue(self, message, value=None):
+        '''Show the list of songs in the queue'''
         # !queue
-        await self.queue_message(message.channel)
+        page_num = (await self.parse_value(message, value))
+        if page_num is None:
+            page_num = 1
+        await self.queue_message(message.channel, page_num-1)
 
 
     async def command_loopqueue(self, message):
+        '''Toggle looping for the whole queue'''
         # !loopqueue
         if (await self.ensure_queue(message.author, message.channel)) and \
            (await self.ensure_dj(message.author, message.channel)):
@@ -656,21 +665,26 @@ class Player(object):
                 await message.channel.send('**:no_entry_sign: Disabled queue loop**')
 
 
-    async def command_move(self, message):
+    async def command_move(self, message, old=None, new=None):
+        '''Move a certain song to a chosen position in the queue'''
         # !move
         if (await self.ensure_queue(message.author, message.channel)) and \
            (await self.ensure_dj(message.author, message.channel)):
-            try:
-                numbers = message.content[len(self.prefix):].split(None, 1)[1]
-            except IndexError:
-                numbers = ''
-            try:
-                numbers = list(map(int, numbers.split()))
-                if len(numbers) == 1:
-                    numbers.append(1)
-                old, new = numbers
-            except ValueError:
-                await message.channel.send('**:x: Invalid syntax, should be `!move <old position> <new position>`**')
+            if old is None:
+                try:
+                    numbers = message.content[len(self.prefix):].split(None, 1)[1]
+                except IndexError:
+                    numbers = ''
+                try:
+                    numbers = list(map(int, numbers.split()))
+                    if len(numbers) == 1:
+                        numbers.append(1)
+                    old, new = numbers
+                except ValueError:
+                    await message.channel.send('**:x: Invalid syntax, should be `!move <old position> <new position>`**')
+                    return
+            elif new is None:
+                new = 1
             else:
                 if not ((1 <= old <= len(self.queue)) and (1 <= new <= len(self.queue))):
                     await message.channel.send('**:x: Invalid position, should be between 1 and %d**' % len(self.queue))
@@ -678,30 +692,34 @@ class Player(object):
                     song = self.queue[old - 1]
                     del self.queue[old - 1]
                     self.queue.insert(new - 1, song)
+                    await message.channel.send('**:white_check_mark: Moved `%s` to position %d in the queue**' % (song.name, new))
 
 
-    async def command_skipto(self, message):
+    async def command_skipto(self, message, position=None):
+        '''Skip to a certain position in the queue'''
         # !skipto
         if (await self.ensure_queue(message.author, message.channel)) and \
            (await self.ensure_dj(message.author, message.channel)):
-            try:
-                position = message.content[len(self.prefix):].split(None, 1)[1]
-            except IndexError:
-                position = ''
-            try:
-                position = int(position)
-            except ValueError:
-                await message.channel.send('**:x: Invalid syntax, should be `!skipto <position>`**')
+            if position is None:
+                try:
+                    position = message.content[len(self.prefix):].split(None, 1)[1]
+                except IndexError:
+                    position = ''
+                try:
+                    position = int(position)
+                except ValueError:
+                    await message.channel.send('**:x: Invalid syntax, should be `!skipto <position>`**')
+                    return
+            if not (1 <= position <= len(self.queue)):
+                await message.channel.send('**:x: Invalid position, should be between 1 and %d**' % len(self.queue))
             else:
-                if not (1 <= position <= len(self.queue)):
-                    await message.channel.send('**:x: Invalid position, should be between 1 and %d**' % len(self.queue))
-                else:
-                    for n in range(position-1):
-                        self.queue.popleft()
-                    await self.skip(message.channel)
+                for n in range(position-1):
+                    self.queue.popleft()
+                await self.skip(message.channel)
 
 
     async def command_shuffle(self, message):
+        '''Shuffle the entire queue'''
         # !shuffle
         if (await self.ensure_queue(message.author, message.channel)) and \
            (await self.ensure_dj(message.author, message.channel)):
@@ -709,44 +727,60 @@ class Player(object):
             await message.channel.send('**Shuffled queue :ok_hand:**')
 
 
-    async def command_remove(self, message):
+    async def command_remove(self, message, number=None):
+        '''Remove a certain entry from the queue'''
         # !remove
         if (await self.ensure_queue(message.author, message.channel)) and \
            (await self.ensure_dj(message.author, message.channel)):
-            try:
-                numbers = message.content[len(self.prefix):].split(None, 1)[1]
-            except IndexError:
-                numbers = ''
-            try:
-                numbers = list(map(int, numbers.split()))
-            except ValueError:
-                await message.channel.send('**:x: Invalid syntax, should be `!remove <numbers>`**')
+            if number is None:
+                try:
+                    numbers = message.content[len(self.prefix):].split(None, 1)[1]
+                except IndexError:
+                    numbers = ''
+                try:
+                    numbers = list(map(int, numbers.split()))
+                except ValueError:
+                    await message.channel.send('**:x: Invalid syntax, should be `!remove <numbers>`**')
+                    return
             else:
-                for number in numbers:
-                    if not (1 <= number <= len(self.queue)):
-                        await message.channel.send('**:x: Invalid position, should be between 1 and %d**' % len(self.queue))
-                        break
-                else:
-                    numbers = sorted(set(numbers), reverse=True)
-                    removed = []
-                    for n in numbers:
-                        removed.append(self.queue[n-1])
-                        del self.queue[n-1]
-                    if len(removed) > 1:
-                        await message.channel.send('**:white_check_mark: Removed `%d` songs**' % len(removed))
-                    elif len(removed) == 1:
-                        await message.channel.send('**:white_check_mark: Removed `%s`**' % removed[0].name)
+                numbers = [number]
+            for number in numbers:
+                if not (1 <= number <= len(self.queue)):
+                    await message.channel.send('**:x: Invalid position, should be between 1 and %d**' % len(self.queue))
+                    break
+            else:
+                numbers = sorted(set(numbers), reverse=True)
+                removed = []
+                for n in numbers:
+                    removed.append(self.queue[n-1])
+                    del self.queue[n-1]
+                if len(removed) > 1:
+                    await message.channel.send('**:white_check_mark: Removed `%d` songs**' % len(removed))
+                elif len(removed) == 1:
+                    await message.channel.send('**:white_check_mark: Removed `%s`**' % removed[0].name)
 
 
-    async def command_clear(self, message):
+    async def command_clear(self, message, user=None):
+        '''Clear the whole queue'''
         # !clear
         if (await self.ensure_queue(message.author, message.channel)) and \
            (await self.ensure_dj(message.author, message.channel)):
-            self.queue.clear()
-            await message.channel.send('***:boom: Cleared... :stop_button:***')
+            if (user is None) and isinstance(message, discord.Message) and message.mentions:
+                user = message.mentions[0]
+            if user is None:
+                self.queue.clear()
+                await message.channel.send('***:boom: Cleared... :stop_button:***')
+            else:
+                n = 0
+                for song in tuple(self.queue):
+                    if song.user == user:
+                        self.queue.remove(song)
+                        n += 1
+                await message.channel.send('**:thumbsup: %d songs removed from the queue**' % n)
 
 
     async def command_leavecleanup(self, message):
+        '''Remove absent users' songs from the queue'''
         # !leavecleanup
         if (await self.ensure_queue(message.author, message.channel)) and \
            (await self.ensure_dj(message.author, message.channel)):
@@ -759,6 +793,7 @@ class Player(object):
             
 
     async def command_removedupes(self, message):
+        '''Remove duplicate songs from the queue'''
         # !removedupes
         if (await self.ensure_queue(message.author, message.channel)) and \
            (await self.ensure_dj(message.author, message.channel)):
@@ -775,13 +810,17 @@ class Player(object):
 
 
     async def command_settings(self, message):
+        '''List out the Bluez bot settings'''
         # !settings
-        args = message.content[len(self.prefix):].split(None, 2)[1:]
-        if not args:
-            setting = None
+        if isinstance(message, discord.Message):
+            args = message.content[len(self.prefix):].split(None, 2)[1:]
+            if not args:
+                setting = None
+            else:
+                setting = args[0].lower()
+                value = (args[1] if len(args) == 2 else None)
         else:
-            setting = args[0].lower()
-            value = (args[1] if len(args) == 2 else None)
+            setting = None
         if setting is None:
             # Print out all the settings
             embed = discord.Embed(title='Bluez Settings',
@@ -985,13 +1024,17 @@ class Player(object):
 
 
     async def command_effects(self, message):
+        '''Show current audio effects'''
         # !effects
         if (await self.ensure_connected(message.author, message.channel)):
-            try:
-                command = message.content[len(self.prefix):].split()[1]
-            except IndexError:
+            if isinstance(message, discord.Message):
+                try:
+                    command = message.content[len(self.prefix):].split()[1]
+                except IndexError:
+                    command = ''
+                command = command.lower()
+            else:
                 command = ''
-            command = command.lower()
             if command == '':
                 # Show current effects
                 embed = discord.Embed(title='Current audio effect settings',
@@ -1039,43 +1082,36 @@ Volume - %d''' % (self.tempo, self.bass, 'On' if self.nightcore else 'Off',
 
 
 
-    async def command_speed(self, message):
+    async def command_speed(self, message, value=None):
+        '''Show or adjust the playback speed'''
         # !speed
         if (await self.ensure_connected(message.author, message.channel)):
-            try:
-                value = message.content[len(self.prefix):].split()[1]
-            except IndexError:
-                value = None
+            value = (await self.parse_value(message, value, 0.1, 3, integer=False))
             if value is None:
                 await message.channel.send('**:man_running: Current playback speed is set to %s**' % self.tempo)
             elif (await self.ensure_dj(message.author, message.channel)):
-                value = (await self.parse_number(value, message.channel, 0.1, 3))
-                if value is not None:
-                    self.tempo = value
-                    self.update_audio()
-                    await message.channel.send('**:white_check_mark: Playback speed set to %s**' % self.tempo)
+                self.tempo = value
+                self.update_audio()
+                await message.channel.send('**:white_check_mark: Playback speed set to %s**' % self.tempo)
 
 
 
-    async def command_bass(self, message):
+    async def command_bass(self, message, value=None):
+        '''Show or adjust the bass-boost effect'''
         # !bass
         if (await self.ensure_connected(message.author, message.channel)):
-            try:
-                value = message.content[len(self.prefix):].split()[1]
-            except IndexError:
-                value = None
+            value = (await self.parse_value(message, value, 1, 5, integer=True))
             if value is None:
                 await message.channel.send('**:guitar: Current bass boost is set to %d**' % self.bass)
             elif (await self.ensure_dj(message.author, message.channel)):
-                value = (await self.parse_integer(value, message.channel, 1, 5))
-                if value is not None:
-                    self.bass = value
-                    self.update_audio()
-                    await message.channel.send('**:white_check_mark: Bass boost set to %d**' % self.bass)
+                self.bass = value
+                self.update_audio()
+                await message.channel.send('**:white_check_mark: Bass boost set to %d**' % self.bass)
 
 
 
     async def command_nightcore(self, message):
+        '''Toggle the nightcore effect'''
         # !nightcore
         if (await self.ensure_connected(message.author, message.channel)) and \
            (await self.ensure_dj(message.author, message.channel)):
@@ -1085,6 +1121,7 @@ Volume - %d''' % (self.tempo, self.bass, 'On' if self.nightcore else 'Off',
 
 
     async def command_slowed(self, message):
+        '''Toggle the slowed effect'''
         # !slowed
         if (await self.ensure_connected(message.author, message.channel)) and \
            (await self.ensure_dj(message.author, message.channel)):
@@ -1095,26 +1132,23 @@ Volume - %d''' % (self.tempo, self.bass, 'On' if self.nightcore else 'Off',
 
 
     async def command_volume(self, message):
+        '''Show or adjust the playback volume'''
         # !volume
         if (await self.ensure_connected(message.author, message.channel)):
-            try:
-                value = message.content[len(self.prefix):].split()[1]
-            except IndexError:
-                value = None
+            value = (await self.parse_value(message, value, 1, 200, integer=True))
             if value is None:
                 await message.channel.send('**:loud_sound: Volume is currently set to %d**' % round(200 * self.volume))
             elif (await self.ensure_dj(message.author, message.channel)):
-                value = (await self.parse_integer(value, message.channel, 1, 200))
-                if value is not None:
-                    self.volume = value / 200.0
-                    self.update_audio()
-                    await message.channel.send('**:white_check_mark: Volume set to %d**' % value)
+                self.volume = value / 200.0
+                self.update_audio()
+                await message.channel.send('**:white_check_mark: Volume set to %d**' % value)
                     
         
 
 
 
     async def command_prune(self, message):
+        '''Delete the bot's message and commands'''
         # !prune
         if self.text_channel is not None:
             async for msg in self.text_channel.history(after=self.connect_time):
@@ -1191,6 +1225,19 @@ Volume - %d''' % (self.tempo, self.bass, 'On' if self.nightcore else 'Off',
 
 
 
+    async def parse_value(self, message, value=None, min=None, max=None, integer=True):
+        if value is None:
+            if not isinstance(message, discord.Message):
+                return None
+            try:
+                value = message.content[len(self.prefix):].split()[1]
+            except IndexError:
+                return None
+        parse = (self.parse_integer if integer else self.parse_number)
+        return (await parse(value, message.channel, min, max))
+
+
+
     async def notify_user_join(self, member):
         if self.empty_paused:
             self.voice_client.resume()
@@ -1241,6 +1288,21 @@ Volume - %d''' % (self.tempo, self.bass, 'On' if self.nightcore else 'Off',
                 songs = songs[:self.maxusersongs - nuser]
                 await channel.send('**:warning: Shortening playlist due to reaching the maximum songs you can have in the queue**')
         return songs
+
+
+
+    def get_string(self, message, string):
+        # Utility to either get a string from a slash command (in which case the first argument
+        # will be a discord_slash.SlashContext and the second will be the string, or None if optional),
+        # or else get the string from the content of a discord.Message (in which case the second
+        # argument is None)
+        if string is not None:
+            return string
+        if isinstance(message, discord.Message):
+            try:
+                return message.content[len(self.prefix):].split(None, 1)[1]
+            except IndexError:
+                pass
     
     
         
