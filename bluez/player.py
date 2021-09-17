@@ -1205,10 +1205,10 @@ Volume - %d''' % (self.tempo, self.bass, 'On' if self.nightcore else 'Off',
         try:
             value = int(value)
         except ValueError:
-            await message.channel.send('**:x: unable to parse integer `%s`**' % value)
+            await channel.send('**:x: unable to parse integer `%s`**' % value)
             return None
         if (min is not None) and (max is not None) and not (min <= value <= max):
-            await message.channel.send('**:x: value must be between %d and %d**' % (min, max))
+            await channel.send('**:x: value must be between %d and %d**' % (min, max))
             return None
         return value
 
@@ -1217,10 +1217,10 @@ Volume - %d''' % (self.tempo, self.bass, 'On' if self.nightcore else 'Off',
         try:
             value = float(value)
         except ValueError:
-            await message.channel.send('**:x: unable to parse number `%s`**' % value)
+            await channel.send('**:x: unable to parse number `%s`**' % value)
             return None
         if (min is not None) and (max is not None) and not (min <= value <= max):
-            await message.channel.send('**:x: value must be between %s and %s**' % (min, max))
+            await channel.send('**:x: value must be between %s and %s**' % (min, max))
             return None
         return value
 
