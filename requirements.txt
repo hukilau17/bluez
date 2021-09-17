@@ -3,3 +3,4 @@ gunicorn
 youtube_dl
 ffmpeg
 pynacl
+lyricsgenius
