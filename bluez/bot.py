@@ -323,7 +323,6 @@ or the `Manage Channels` permission to use it**' % player.djrole)
         'weeb'      : 'nightcore',
         'purge'     : 'prune',
         'clean'     : 'prune',
-        'links'     : 'invite',
         }
 
 
