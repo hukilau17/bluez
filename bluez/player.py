@@ -341,6 +341,7 @@ class Player(object):
                 embed.add_field(name='Song Duration', value=format_time(songs[0].length), inline=True)
                 embed.add_field(name='Estimated time until playing', value=time, inline=True)
                 embed.add_field(name='Position in queue', value=position, inline=False)
+                embed.set_thumbnail(url=songs[0].thumbnail)
             await channel.send(embed=embed)
         
         
@@ -475,6 +476,7 @@ class Player(object):
             song = songs[int(m) - 1]
             if not (await self.trim_songs([song], message.channel)):
                 return # the user can't queue this song for some reason
+            song.process()
             self.queue.append(song)
             await self.enqueue_message(len(self.queue) - 1, [song], message.channel)
             await self.wake_up()
@@ -513,7 +515,7 @@ class Player(object):
         '''Save the song currently playing to your DMs'''
         # !grab
         if (await self.ensure_playing(message.author, message.channel)):
-            await self.np_message(message.author.dm_channel)
+            await self.np_message(message.author)
 
 
     async def command_seek(self, message, time=None):
@@ -685,14 +687,13 @@ class Player(object):
                     return
             elif new is None:
                 new = 1
+            if not ((1 <= old <= len(self.queue)) and (1 <= new <= len(self.queue))):
+                await message.channel.send('**:x: Invalid position, should be between 1 and %d**' % len(self.queue))
             else:
-                if not ((1 <= old <= len(self.queue)) and (1 <= new <= len(self.queue))):
-                    await message.channel.send('**:x: Invalid position, should be between 1 and %d**' % len(self.queue))
-                else:
-                    song = self.queue[old - 1]
-                    del self.queue[old - 1]
-                    self.queue.insert(new - 1, song)
-                    await message.channel.send('**:white_check_mark: Moved `%s` to position %d in the queue**' % (song.name, new))
+                song = self.queue[old - 1]
+                del self.queue[old - 1]
+                self.queue.insert(new - 1, song)
+                await message.channel.send('**:white_check_mark: Moved `%s` to position %d in the queue**' % (song.name, new))
 
 
     async def command_skipto(self, message, position=None):
@@ -776,7 +777,7 @@ class Player(object):
                     if song.user == user:
                         self.queue.remove(song)
                         n += 1
-                await message.channel.send('**:thumbsup: %d songs removed from the queue**' % n)
+                await message.channel.send('**:thumbsup: %d song%s removed from the queue**' % (n, '' if n == 1 else 's'))
 
 
     async def command_leavecleanup(self, message):
@@ -789,7 +790,7 @@ class Player(object):
                 if song.user not in self.voice_channel.members:
                     self.queue.remove(song)
                     n += 1
-            await message.channel.send('**:thumbsup: %d songs removed from the queue**' % n)
+            await message.channel.send('**:thumbsup: %d song%s removed from the queue**' % (n, '' if n == 1 else 's'))
             
 
     async def command_removedupes(self, message):
@@ -803,7 +804,7 @@ class Player(object):
                 if song in t[:i]:
                     self.queue.remove(song)
                     n += 1
-            await message.channel.send('**:thumbsup: %d songs removed from the queue**' % n)
+            await message.channel.send('**:thumbsup: %d song%s removed from the queue**' % (n, '' if n == 1 else 's'))
 
 
 
@@ -1131,7 +1132,7 @@ Volume - %d''' % (self.tempo, self.bass, 'On' if self.nightcore else 'Off',
 
 
 
-    async def command_volume(self, message):
+    async def command_volume(self, message, value=None):
         '''Show or adjust the playback volume'''
         # !volume
         if (await self.ensure_connected(message.author, message.channel)):

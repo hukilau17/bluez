@@ -36,27 +36,28 @@ class Bot(discord.Client):
     def setup_guild(self, guild):
         # Create a Player for a specific guild, and add slash commands
         player = Player(self, guild)
-        for command in self.player_commands:
-            self.slash.add_slash_command(getattr(player, 'command_' + command), command,
-                                         guild_ids=[guild.id], options=self.command_options.get(command))
-        for alias, command in self.slash_aliases.items():
-            self.slash.add_slash_command(getattr(player, 'command_' + command), alias,
-                                         guild_ids=[guild.id], options=self.command_options.get(command))
         self.players[guild.id] = player
         
 
 
     async def on_ready(self):
         # Called when the bot comes online
+        # Sets up all slash commands and creates a player for each guild
+        for guild in self.guilds:
+            self.players[guild.id] = Player(self, guild)
         for command in self.global_commands:
             self.slash.add_slash_command(getattr(self, 'command_' + command), command, options=self.command_options.get(command))
-        for guild in self.guilds:
-            self.setup_guild(guild)
+        for command in self.player_commands:
+            self.slash.add_slash_command(lambda ctx, *args: getattr(self.players[ctx.guild.id], 'command_' + command), command,
+                                         options=self.command_options.get(command))
+        for alias, command in self.slash_aliases.items():
+            self.slash.add_slash_command(lambda ctx, *args: getattr(self.players[ctx.guild.id], 'command_' + command), alias,
+                                         options=self.command_options.get(command))
 
 
     async def on_guild_join(self, guild):
         # Called when the bot joins a guild
-        self.setup_guild(guild)
+        self.players[guild.id] = Player(self, guild)
 
 
 
@@ -400,8 +401,8 @@ for personal use. Source code is freely available online: `https://github.com/hu
         song = self.genius.search_song(search_term)
         if song:
             embed = discord.Embed(title='%s - %s' % (song.artist, song.title),
-                                  description=song.lyrics,
-                                  thumbnail=song.art_image_thumbnail_url)
+                                  description=song.lyrics)
+            embed.set_thumbnail(url=song.song_art_image_thumbnail_url)
             await message.channel.send(embed=embed)
         else:
             await message.channel.send('**:x: There were no results matching the query**')
