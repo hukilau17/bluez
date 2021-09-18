@@ -46,7 +46,7 @@ class Bot(discord.Client):
         for command in self.global_commands:
             self.slash.add_slash_command(getattr(self, 'command_' + command), command, options=self.command_options.get(command))
         def slashfunc(command):
-            return lambda ctx, *args, **kwargs: getattr(self.players[ctx.guild.id], 'command_' + command)(*args, **kwargs)
+            return lambda ctx, *args, **kwargs: getattr(self.players[ctx.guild.id], 'command_' + command)(ctx, *args, **kwargs)
         for command in self.player_commands:
             self.slash.add_slash_command(slashfunc(command), command,
                                          description=getattr(Player, 'command_' + command).__doc__,
