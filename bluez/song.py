@@ -63,7 +63,7 @@ class Song(object):
                 self.link = self.data.get('url')
         else:
             self.url = self.data['url']
-            self.link = self.data['webpage_url']
+            self.link = self.data.get('webpage_url', getattr(self, 'link', None))
 
     def process(self):
         if (self.url is None) and ('extra_info_hack' in self.data):

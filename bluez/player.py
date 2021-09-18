@@ -1255,7 +1255,7 @@ Volume - %d''' % (self.tempo, self.bass, 'On' if self.nightcore else 'Off',
             except IndexError:
                 return None
         parse = (self.parse_integer if integer else self.parse_number)
-        return (await parse(target, message.channel, min, max))
+        return (await parse(value, target, min, max))
 
 
 
