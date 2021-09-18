@@ -135,7 +135,7 @@ class Player(object):
         await text_channel.send('**:thumbsup: Joined `%s` and bound to %s**' % \
                                 (voice_channel.name, text_channel.mention))
         if self.autoplay:
-            songs = (await songs_from_url(song_info, self.client.user, 500))
+            songs = (await songs_from_url(song_info, self.client.user))
             self.queue.extend(songs)
             random.shuffle(self.queue)
             await self.enqueue_message(0, songs, text_channel)
@@ -377,7 +377,7 @@ class Player(object):
             if not song_info:
                 return
             if is_url(song_info):
-                songs = (await songs_from_url(song_info, message.author, 500))
+                songs = (await songs_from_url(song_info, message.author))
             else:
                 songs = (await songs_from_youtube(song_info, message.author, 1))
             n = len(self.queue)
@@ -401,7 +401,7 @@ class Player(object):
             if not song_info:
                 return
             if is_url(song_info):
-                songs = (await songs_from_url(song_info, message.author, 500))
+                songs = (await songs_from_url(song_info, message.author))
             else:
                 songs = (await songs_from_youtube(song_info, message.author, 1))
             if (len(songs) > 1) and self.djplaylists and not self.is_dj(message.author):
@@ -424,7 +424,7 @@ class Player(object):
             if not song_info:
                 return
             if is_url(song_info):
-                songs = (await songs_from_url(song_info, message.author, 500))
+                songs = (await songs_from_url(song_info, message.author))
             else:
                 songs = (await songs_from_youtube(song_info, message.author, 1))
             if (len(songs) > 1) and self.djplaylists and not self.is_dj(message.author):
@@ -491,7 +491,7 @@ class Player(object):
             if not song_info:
                 return
             if is_url(song_info):
-                songs = (await songs_from_url(song_info, message.author, 500))
+                songs = (await songs_from_url(song_info, message.author))
             else:
                 songs = (await songs_from_soundcloud(song_info, message.author, 1))
             n = len(self.queue)

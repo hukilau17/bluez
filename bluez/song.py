@@ -30,7 +30,7 @@ ydl = youtube_dl.YoutubeDL({
     'nocheckcertificate': True,
     'ignoreerrors': False,
     'logtostderr': False,
-    'quiet': False, # change to True later
+    'quiet': (not BLUEZ_DEBUG),
     'no_warnings': True,
     'default_search': 'auto',
     'source_address': '0.0.0.0' # bind to ipv4 since ipv6 addresses cause issues sometimes
@@ -141,11 +141,11 @@ async def extract_info(url):
 
 
 
-async def songs_from_url(url, user, maxn):
+async def songs_from_url(url, user):
     data = (await extract_info(url))
     if 'entries' in data:
         entries = data['entries']
-        pl = Playlist([Song(entries[i], user) for i in range(min(maxn, len(entries)))])
+        pl = Playlist([Song(entry, user) for entry in entries])
         pl.name = data['title']
         pl.link = data['webpage_url']
         return pl

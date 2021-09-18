@@ -1,5 +1,7 @@
 # Miscellaneous utilities
 
+BLUEZ_DEBUG = True # debug flag
+
 
 def format_time(time):
     if time < 3600:

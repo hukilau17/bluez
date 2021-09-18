@@ -3,10 +3,12 @@
 import discord
 import asyncio
 import os
+import logging
 import lyricsgenius
 import discord_slash
 
 from bluez.player import Player
+from bluez.util import BLUEZ_DEBUG
 
 
 
@@ -24,7 +26,9 @@ class Bot(discord.Client):
         discord.Client.__init__(self, intents=intents)
         self.players = {}
         self.genius = lyricsgenius.Genius()
-        self.slash = discord_slash.SlashCommand(self, sync_commands=True)
+        self.slash = discord_slash.SlashCommand(self)
+        if BLUEZ_DEBUG:
+            logging.basicConfig(level=logging.DEBUG)
         
 
 
@@ -47,6 +51,7 @@ class Bot(discord.Client):
         for alias, command in self.slash_aliases.items():
             self.slash.add_slash_command(lambda ctx, *args: getattr(self.players[ctx.guild.id], 'command_' + command), alias,
                                          options=self.command_options.get(command))
+        await self.slash.sync_all_commands()
 
 
     async def on_guild_join(self, guild):
