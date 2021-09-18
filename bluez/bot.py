@@ -45,12 +45,14 @@ class Bot(discord.Client):
             self.players[guild.id] = Player(self, guild)
         for command in self.global_commands:
             self.slash.add_slash_command(getattr(self, 'command_' + command), command, options=self.command_options.get(command))
+        def slashfunc(command):
+            return lambda ctx, *args, **kwargs: getattr(self.players[ctx.guild.id], 'command_' + command)(*args, **kwargs)
         for command in self.player_commands:
-            self.slash.add_slash_command(lambda ctx, *args, **kwargs: getattr(self.players[ctx.guild.id], 'command_' + command)(*args, **kwargs), command,
+            self.slash.add_slash_command(slashfunc(command), command,
                                          description=getattr(Player, 'command_' + command).__doc__,
                                          options=self.command_options.get(command, []))
         for alias, command in self.slash_aliases.items():
-            self.slash.add_slash_command(lambda ctx, *args, **kwargs: getattr(self.players[ctx.guild.id], 'command_' + command)(*args, **kwargs), alias,
+            self.slash.add_slash_command(slashfunc(command), alias,
                                          description=getattr(Player, 'command_' + command).__doc__,
                                          options=self.command_options.get(command, []))
         await self.slash.sync_all_commands()
@@ -376,7 +378,7 @@ for personal use. Source code is freely available online: `https://github.com/hu
 
 
 
-    async def command_lyrics(self, message, search_term=None):
+    async def command_lyrics(self, message, song=None):
         '''Get the lyrics of a song (by default the currently playing song)'''
         # !lyrics
         if getattr(message, 'guild', None):
@@ -385,21 +387,21 @@ for personal use. Source code is freely available online: `https://github.com/hu
         else:
             player = None
             prefix = '!'
-        if (search_term is None) and isinstance(message, discord.Message):
+        if (song is None) and isinstance(message, discord.Message):
             try:
-                search_term = message.content[len(prefix):].split(None, 1)[1]
+                song = message.content[len(prefix):].split(None, 1)[1]
             except IndexError:
-                search_term = None
-        if not search_term:
+                song = None
+        if not song:
             if player:
                 if (await player.ensure_playing(message.author, message.channel)):
-                    search_term = player.now_playing.name
+                    song = player.now_playing.name
                 else:
                     return
             else:
                 await message.channel.send('**:x: I am not currently playing anything.**')
                 return
-        song = self.genius.search_song(search_term)
+        song = self.genius.search_song(song)
         if song:
             embed = discord.Embed(title='%s - %s' % (song.artist, song.title),
                                   description=song.lyrics)
