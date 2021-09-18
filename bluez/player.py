@@ -481,7 +481,7 @@ class Player(object):
                     return m.content.strip().lower() in ('cancel',) + tuple(map(str, range(1, len(songs)+1)))
             self.searching_channels.append(target.channel)
             try:
-                result = (await self.client.wait_for('message', check=check, timeout=10))
+                result = (await self.client.wait_for('message', check=check, timeout=30))
             except asyncio.TimeoutError:
                 await target.channel.send('**:no_entry_sign: Timeout**')
                 result = None
