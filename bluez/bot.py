@@ -1,11 +1,11 @@
 # Main bot class
 
 import discord
+import discord_slash
 import asyncio
 import os
 import logging
 import lyricsgenius
-import discord_slash
 
 from bluez.player import Player
 from bluez.util import BLUEZ_DEBUG
@@ -29,6 +29,19 @@ class Bot(discord.Client):
         self.slash = discord_slash.SlashCommand(self)
         if BLUEZ_DEBUG:
             logging.basicConfig(level=logging.DEBUG)
+
+
+
+    async def send(self, target, *args, **kwargs):
+        if isinstance(target, discord_slash.SlashContext) and (target.deferred or target.responded):
+            target = target.channel
+        elif isinstance(target, discord.Message):
+            target = target.channel
+        if not (args or kwargs):
+            if isinstance(target, discord_slash.SlashContext):
+                await target.defer()
+            return
+        return (await target.send(*args, **kwargs))
         
 
 
@@ -118,9 +131,9 @@ or the `Manage Channels` permission to use it**' % player.djrole)
 
 
 
-    async def post_multipage_embed(self, embeds, channel, start_index=0):
+    async def post_multipage_embed(self, embeds, target, start_index=0):
         start_index = max(min(start_index, len(embeds)-1), 0)
-        message = (await channel.send(embed=embeds[start_index]))
+        message = (await self.send(target, embed=embeds[start_index]))
         if len(embeds) > 1:
             current_page = start_index
             await message.add_reaction('\u25c0')
@@ -334,7 +347,7 @@ or the `Manage Channels` permission to use it**' % player.djrole)
     # Global commands
 
 
-    async def command_aliases(self, message):
+    async def command_aliases(self, target):
         '''List all command aliases'''
         # !aliases
         aliases = {}
@@ -352,63 +365,64 @@ or the `Manage Channels` permission to use it**' % player.djrole)
             page = commands[20*i : 20*(i+1)]
             embed.description = '\n'.join(page) + ('\n\nPage %d/%d' % (i+1, npages))
             embeds.append(embed)
-        await self.post_multipage_embed(embeds, message.channel)
+        await self.post_multipage_embed(embeds, target)
 
 
-    async def command_ping(self, message):
+    async def command_ping(self, target):
         '''Check the bot's response time to Discord'''
         # !ping
-        await message.channel.send('**Howdy.**')
+        await self.send(target, '**Howdy.**')
 
 
-    async def command_info(self, message):
+    async def command_info(self, target):
         '''Show information about Bluez'''
         # !info
         embed = discord.Embed(title='About Bluez',
                               description='''Bluez is a personal-use, open source music bot implemented in Python by Matthew Kroesche.
 [Source](https://github.com/hukilau17/bluez)''')
-        await message.channel.send(embed=embed)
+        await self.send(target, embed=embed)
 
 
-    async def command_invite(self, message):
+    async def command_invite(self, target):
         '''Show the source link for Bluez'''
         # !invite
-        await message.channel.send('**:no_entry_sign: Do not add Bluez to other servers, since it is currently in beta and strictly \
+        await self.send(target, '**:no_entry_sign: Do not add Bluez to other servers, since it is currently in beta and strictly \
 for personal use. Source code is freely available online: `https://github.com/hukilau17/bluez`**')
 
 
 
-    async def command_lyrics(self, message, song=None):
+    async def command_lyrics(self, target, song=None):
         '''Get the lyrics of a song (by default the currently playing song)'''
         # !lyrics
         if getattr(message, 'guild', None):
-            player = self.players[message.guild.id]
+            player = self.players[target.guild.id]
             prefix = player.prefix
         else:
             player = None
             prefix = '!'
-        if (song is None) and isinstance(message, discord.Message):
+        if isinstance(target, discord.Message):
             try:
-                song = message.content[len(prefix):].split(None, 1)[1]
+                song = target.content[len(prefix):].split(None, 1)[1]
             except IndexError:
                 song = None
         if not song:
             if player:
-                if (await player.ensure_playing(message.author, message.channel)):
+                if (await player.ensure_playing(target.author, target)):
                     song = player.now_playing.name
                 else:
                     return
             else:
-                await message.channel.send('**:x: I am not currently playing anything.**')
+                # this is a DM
+                await self.send(target, '**:x: I am not currently playing anything.**')
                 return
         song = self.genius.search_song(song)
         if song:
             embed = discord.Embed(title='%s - %s' % (song.artist, song.title),
                                   description=song.lyrics)
             embed.set_thumbnail(url=song.song_art_image_thumbnail_url)
-            await message.channel.send(embed=embed)
+            await self.send(target, embed=embed)
         else:
-            await message.channel.send('**:x: There were no results matching the query**')
+            await self.send(target, '**:x: There were no results matching the query**')
 
 
 
