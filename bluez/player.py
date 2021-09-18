@@ -135,7 +135,7 @@ class Player(object):
         await text_channel.send('**:thumbsup: Joined `%s` and bound to %s**' % \
                                 (voice_channel.name, text_channel.mention))
         if self.autoplay:
-            songs = (await songs_from_url(song_info, self.client.user))
+            songs = (await songs_from_url(self.autoplay, self.client.user))
             self.queue.extend(songs)
             random.shuffle(self.queue)
             await self.enqueue_message(0, songs, text_channel)
@@ -369,17 +369,17 @@ class Player(object):
         await self.ensure_joined(message.author, message.channel)
 
 
-    async def command_play(self, message, song_info=None):
+    async def command_play(self, message, query=None):
         '''Play a song with the given name or url'''
         # !play
         if (await self.ensure_joined(message.author, message.channel)):
-            song_info = self.get_string(message, song_info)
-            if not song_info:
+            query = self.get_string(message, query)
+            if not query:
                 return
-            if is_url(song_info):
-                songs = (await songs_from_url(song_info, message.author))
+            if is_url(query):
+                songs = (await songs_from_url(query, message.author))
             else:
-                songs = (await songs_from_youtube(song_info, message.author, 1))
+                songs = (await songs_from_youtube(query, message.author, 1))
             n = len(self.queue)
             if (len(songs) > 1) and self.djplaylists and not self.is_dj(message.author):
                 await message.channel.send('**:x: The server is currently in DJ Only Playlists mode. Only DJs can queue playlists!**')
@@ -390,20 +390,20 @@ class Player(object):
             await self.wake_up()
 
 
-    async def command_playtop(self, message, song_info=None):
+    async def command_playtop(self, message, query=None):
         '''Add a song with the given name/url to the top of the queue'''
         # !playtop
         ensure = (self.ensure_dj if self.queue else self.ensure_joined)
         # you need DJ permissions to insert music into the queue ahead of other people's songs,
         # but not if the queue is empty
         if (await ensure(message.author, message.channel)):
-            song_info = self.get_string(message, song_info)
-            if not song_info:
+            query = self.get_string(message, query)
+            if not query:
                 return
-            if is_url(song_info):
-                songs = (await songs_from_url(song_info, message.author))
+            if is_url(query):
+                songs = (await songs_from_url(query, message.author))
             else:
-                songs = (await songs_from_youtube(song_info, message.author, 1))
+                songs = (await songs_from_youtube(query, message.author, 1))
             if (len(songs) > 1) and self.djplaylists and not self.is_dj(message.author):
                 await message.channel.send('**:x: The server is currently in DJ Only Playlists mode. Only DJs can queue playlists!**')
                 return
@@ -413,20 +413,20 @@ class Player(object):
             await self.wake_up()
 
 
-    async def command_playskip(self, message, song_info=None):
+    async def command_playskip(self, message, query=None):
         '''Skip the current song and play the song with the given name/url'''
         # !playskip
         ensure = (self.ensure_dj if self.queue or self.now_playing else self.ensure_joined)
         # you need DJ permissions to insert music into the queue ahead of other people's songs,
         # or to skip other people's songs
         if (await ensure(message.author, message.channel)):
-            song_info = self.get_string(message, song_info)
-            if not song_info:
+            query = self.get_string(message, query)
+            if not query:
                 return
-            if is_url(song_info):
-                songs = (await songs_from_url(song_info, message.author))
+            if is_url(query):
+                songs = (await songs_from_url(query, message.author))
             else:
-                songs = (await songs_from_youtube(song_info, message.author, 1))
+                songs = (await songs_from_youtube(query, message.author, 1))
             if (len(songs) > 1) and self.djplaylists and not self.is_dj(message.author):
                 await message.channel.send('**:x: The server is currently in DJ Only Playlists mode. Only DJs can queue playlists!**')
                 return
@@ -483,17 +483,17 @@ class Player(object):
             
 
 
-    async def command_soundcloud(self, message, song_info=None):
+    async def command_soundcloud(self, message, query=None):
         '''Play a song from SoundCloud with the given name/url'''
         # !soundcloud
         if (await self.ensure_joined(message.author, message.channel)):
-            song_info = self.get_string(message, song_info)
-            if not song_info:
+            query = self.get_string(message, query)
+            if not query:
                 return
-            if is_url(song_info):
-                songs = (await songs_from_url(song_info, message.author))
+            if is_url(query):
+                songs = (await songs_from_url(query, message.author))
             else:
-                songs = (await songs_from_soundcloud(song_info, message.author, 1))
+                songs = (await songs_from_soundcloud(query, message.author, 1))
             n = len(self.queue)
             if (len(songs) > 1) and self.djplaylists and not self.is_dj(message.author):
                 await message.channel.send('**:x: The server is currently in DJ Only Playlists mode. Only DJs can queue playlists!**')
@@ -646,13 +646,13 @@ class Player(object):
             await self.disconnect(message.channel)
 
 
-    async def command_queue(self, message, value=None):
+    async def command_queue(self, message, page=None):
         '''Show the list of songs in the queue'''
         # !queue
-        page_num = (await self.parse_value(message, value))
-        if page_num is None:
-            page_num = 1
-        await self.queue_message(message.channel, page_num-1)
+        page = (await self.parse_value(message, page))
+        if page is None:
+            page = 1
+        await self.queue_message(message.channel, page-1)
 
 
     async def command_loopqueue(self, message):
@@ -1083,29 +1083,29 @@ Volume - %d''' % (self.tempo, self.bass, 'On' if self.nightcore else 'Off',
 
 
 
-    async def command_speed(self, message, value=None):
+    async def command_speed(self, message, speed=None):
         '''Show or adjust the playback speed'''
         # !speed
         if (await self.ensure_connected(message.author, message.channel)):
-            value = (await self.parse_value(message, value, 0.1, 3, integer=False))
-            if value is None:
+            speed = (await self.parse_value(message, speed, 0.1, 3, integer=False))
+            if speed is None:
                 await message.channel.send('**:man_running: Current playback speed is set to %s**' % self.tempo)
             elif (await self.ensure_dj(message.author, message.channel)):
-                self.tempo = value
+                self.tempo = speed
                 self.update_audio()
                 await message.channel.send('**:white_check_mark: Playback speed set to %s**' % self.tempo)
 
 
 
-    async def command_bass(self, message, value=None):
+    async def command_bass(self, message, bass=None):
         '''Show or adjust the bass-boost effect'''
         # !bass
         if (await self.ensure_connected(message.author, message.channel)):
-            value = (await self.parse_value(message, value, 1, 5, integer=True))
-            if value is None:
+            bass = (await self.parse_value(message, bass, 1, 5, integer=True))
+            if bass is None:
                 await message.channel.send('**:guitar: Current bass boost is set to %d**' % self.bass)
             elif (await self.ensure_dj(message.author, message.channel)):
-                self.bass = value
+                self.bass = bass
                 self.update_audio()
                 await message.channel.send('**:white_check_mark: Bass boost set to %d**' % self.bass)
 
@@ -1132,17 +1132,17 @@ Volume - %d''' % (self.tempo, self.bass, 'On' if self.nightcore else 'Off',
 
 
 
-    async def command_volume(self, message, value=None):
+    async def command_volume(self, message, volume=None):
         '''Show or adjust the playback volume'''
         # !volume
         if (await self.ensure_connected(message.author, message.channel)):
-            value = (await self.parse_value(message, value, 1, 200, integer=True))
-            if value is None:
+            volume = (await self.parse_value(message, volume, 1, 200, integer=True))
+            if volume is None:
                 await message.channel.send('**:loud_sound: Volume is currently set to %d**' % round(200 * self.volume))
             elif (await self.ensure_dj(message.author, message.channel)):
-                self.volume = value / 200.0
+                self.volume = volume / 200.0
                 self.update_audio()
-                await message.channel.send('**:white_check_mark: Volume set to %d**' % value)
+                await message.channel.send('**:white_check_mark: Volume set to %d**' % volume)
                     
         
 

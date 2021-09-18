@@ -46,11 +46,13 @@ class Bot(discord.Client):
         for command in self.global_commands:
             self.slash.add_slash_command(getattr(self, 'command_' + command), command, options=self.command_options.get(command))
         for command in self.player_commands:
-            self.slash.add_slash_command(lambda ctx, *args: getattr(self.players[ctx.guild.id], 'command_' + command), command,
-                                         options=self.command_options.get(command))
+            self.slash.add_slash_command(lambda ctx, *args, **kwargs: getattr(self.players[ctx.guild.id], 'command_' + command)(*args, **kwargs), command,
+                                         description=getattr(Player, 'command_' + command).__doc__,
+                                         options=self.command_options.get(command, []))
         for alias, command in self.slash_aliases.items():
-            self.slash.add_slash_command(lambda ctx, *args: getattr(self.players[ctx.guild.id], 'command_' + command), alias,
-                                         options=self.command_options.get(command))
+            self.slash.add_slash_command(lambda ctx, *args, **kwargs: getattr(self.players[ctx.guild.id], 'command_' + command)(*args, **kwargs), alias,
+                                         description=getattr(Player, 'command_' + command).__doc__,
+                                         options=self.command_options.get(command, []))
         await self.slash.sync_all_commands()
 
 
