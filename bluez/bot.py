@@ -39,7 +39,7 @@ class Bot(discord.Client):
             target = target.channel
         if not (args or kwargs):
             if isinstance(target, discord_slash.SlashContext):
-                await target.defer()
+                await target.defer(hidden=True)
             return
         return (await target.send(*args, **kwargs))
         

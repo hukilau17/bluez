@@ -62,7 +62,7 @@ class Player(object):
             target = target.channel
         if not (args or kwargs):
             if isinstance(target, discord_slash.SlashContext):
-                await target.defer()
+                await target.defer(hidden=True)
             return
         return (await target.send(*args, **kwargs))
         
@@ -297,7 +297,8 @@ class Player(object):
                                   progress_bar + '\n\n' + \
                                   time_message + '\n\n' + \
                                   '`Requested by:` ' + format_user(song.user))
-            embed.set_thumbnail(url=song.thumbnail)
+            if song.thumbnail:
+                embed.set_thumbnail(url=song.thumbnail)
             await self.send(target, embed=embed)
 
 
@@ -359,7 +360,8 @@ class Player(object):
                 embed.add_field(name='Song Duration', value=format_time(songs[0].length), inline=True)
                 embed.add_field(name='Estimated time until playing', value=time, inline=True)
                 embed.add_field(name='Position in queue', value=position, inline=False)
-                embed.set_thumbnail(url=songs[0].thumbnail)
+                if songs[0].thumbnail:
+                    embed.set_thumbnail(url=songs[0].thumbnail)
             await self.send(target, embed=embed)
         
         
