@@ -20,20 +20,13 @@ class Player(object):
     def __init__(self, client, guild):
         self.client = client
         self.guild = guild
-        self.text_channel = None
-        self.voice_channel = None
-        self.voice_client = None
-        self.now_playing = None
-        self.bot_messages = []
-        self.searching_channels = []
-        self.queue = collections.deque()
-        self.looping = False
-        self.queue_looping = False
-        self.votes = []
-        self.empty_paused = False
-        self.idle_task = None
-        self.last_started_playing = None
-        self.last_paused = None
+        self.reset_settings()
+        self.reset()
+
+
+    # Functions for initializing/resetting the bot's state
+
+    def reset_settings(self):
         self.prefix = '!'
         self.announcesongs = False
         self.preventduplicates = False
@@ -46,13 +39,34 @@ class Player(object):
         self.defaultvolume = 0.5
         self.autoplay = None
         self.alwaysplaying = False
-        self.volume = 0.5
+
+
+    def reset_effects(self):
         self.tempo = 1.0
         self.pitch = 1.0
         self.bass = 1
         self.nightcore = False
         self.slowed = False
+        self.volume = self.defaultvolume
+
+
+    def reset(self):
+        self.text_channel = None
+        self.voice_channel = None
+        self.voice_client = None
+        self.now_playing = None
+        self.queue = collections.deque()
+        self.looping = False
+        self.queue_looping = False
+        self.votes = []
+        self.empty_paused = False
+        self.idle_task = None
+        self.last_started_playing = None
+        self.last_paused = None
+        self.bot_messages = []
+        self.searching_channels = []
         self.seek_pos = None
+        self.reset_effects()
 
 
 
@@ -71,6 +85,8 @@ class Player(object):
         
 
 
+
+    # Coroutines to ensure that a certain condition is met before proceeding further
 
     async def ensure_connected(self, member, target):
         # Make sure the bot has joined some voice channel
@@ -150,14 +166,13 @@ class Player(object):
 
     async def connect(self, target, voice_channel):
         # Connect to a voice channel
+        self.reset()
         self.voice_client = (await voice_channel.connect())
         text_channel = target
         if not isinstance(text_channel, discord.TextChannel):
             text_channel = text_channel.channel
         self.text_channel = text_channel
         self.voice_channel = voice_channel
-        self.bot_messages = []
-        self.volume = self.defaultvolume
         await self.send(target, '**:thumbsup: Joined `%s` and bound to %s**' % \
                         (voice_channel.name, text_channel.mention))
         if self.autoplay:
@@ -176,24 +191,7 @@ class Player(object):
         # Leave the voice channel
         if self.voice_channel is not None:
             client = self.voice_client
-            self.text_channel = None
-            self.voice_channel = None
-            self.voice_client = None
-            self.now_playing = None
-            self.queue.clear()
-            self.looping = False
-            self.queue_looping = False
-            self.votes = []
-            self.empty_paused = False
-            self.last_started_playing = None
-            self.last_paused = None
-            self.bot_messages = []
-            self.seek_pos = None
-            self.tempo = 1.0
-            self.pitch = 1.0
-            self.bass = 1
-            self.nightcore = False
-            self.slowed = False
+            self.reset()
             await client.disconnect()
             if target:
                 await self.send(target, '**:mailbox_with_no_mail: Successfully disconnected**')
@@ -366,8 +364,7 @@ class Player(object):
                     position = str(position + 1)
             if len(songs) > 1:
                 # This is a playlist
-                embed = discord.Embed(title='Playlist added to queue', description=getattr(songs, 'name', None),
-                                      url=getattr(songs, 'link', None))
+                embed = discord.Embed(title='Playlist added to queue', description=format_link(songs))
                 embed.add_field(name='Estimated time until playing', value=time, inline=False)
                 embed.add_field(name='Position in queue', value=position, inline=True)
                 embed.add_field(name='Enqueued', value='`%d` song%s' % (len(songs), '' if len(songs) == 1 else 's'), inline=True)
@@ -389,6 +386,8 @@ class Player(object):
 
 
     async def songs_from_query(self, query, target, soundcloud=False):
+        # Return a list of Song objects matching a query,
+        # which can be either a URL or a search term
         if is_url(query):
             try:
                 return (await songs_from_url(query, target.author))
@@ -657,7 +656,7 @@ class Player(object):
                 else:
                     await self.send(target, '**Skipping?** (%d/%d people)%s' \
                                     % (len(self.votes), int(.75 * (len(self.voice_channel.members) - 1)),
-                                       '**`!forceskip` or `!fs` to force**' if discord.utils.get(roles, name=self.djrole) else ''))
+                                       '**`!forceskip` or `!fs` to force**' if self.is_dj(target.author) else ''))
                     
 
     async def command_forceskip(self, target):
@@ -1034,7 +1033,10 @@ class Player(object):
                 if value is None:
                     return
             self.maxqueuelength = value
-            await self.send(target, '**:white_check_mark: Max queue length set to %d**' % value)
+            if value is None:
+                await self.send(target, '**:no_entry_sign: Max queue length disabled**')
+            else:
+                await self.send(target, '**:white_check_mark: Max queue length set to %d**' % value)
         elif setting == 'maxusersongs':
             if value in ('disable', 0):
                 value = None
@@ -1043,7 +1045,10 @@ class Player(object):
                 if value is None:
                     return
             self.maxusersongs = value
-            await self.send(target, '**:white_check_mark: Max user song limit set to %d**' % value)
+            if value is None:
+                await self.send(target, '**:no_entry_sign: Max user song limit disabled**')
+            else:
+                await self.send(target, '**:white_check_mark: Max user song limit set to %d**' % value)
         elif setting == 'preventduplicates':
             self.preventduplicates = value
             if value:
@@ -1092,36 +1097,27 @@ class Player(object):
             if yesno.content.lower().strip() == 'no':
                 return
             # Otherwise reset everything
-            self.prefix = '!'
-            self.blacklist = []
-            self.autoplay = None
-            self.announcesongs = False
-            self.maxqueuelength = None
-            self.maxusersongs = None
-            self.preventduplicates = False
-            self.defaultvolume = 0.5
-            self.djplaylists = False
-            self.djonly = False
-            self.djrole = 'DJ'
-            self.alwaysplaying = False
+            self.reset_settings()
             await self.send(target, '**:white_check_mark: All settings have been reset to their defaults**')
+        else:
+            await self.send(target, '**:x: Unknown setting `%s`**' % setting)
 
 
 
     async def command_effects(self, target):
         '''Show current audio effects'''
         # !effects
-        if (await self.ensure_connected(target.author, target)):
-            if isinstance(target, discord.Message):
-                try:
-                    command = target.content[len(self.prefix):].split()[1]
-                except IndexError:
-                    command = ''
-                command = command.lower()
-            else:
-                command = target.subcommand_name
-            if command in ('', 'show'):
-                # Show current effects
+        if isinstance(target, discord.Message):
+            try:
+                command = target.content[len(self.prefix):].split()[1]
+            except IndexError:
+                command = ''
+            command = command.lower()
+        else:
+            command = target.subcommand_name
+        if command in ('', 'show'):
+            # Show current effects
+            if (await self.ensure_connected(target.author, target)):
                 embed = discord.Embed(title='Current audio effect settings',
                                       description='''\
 :man_running: Speed - %s
@@ -1137,41 +1133,37 @@ class Player(object):
 :loud_sound: Volume - %d''' % (self.tempo, self.pitch, self.bass, 'On' if self.nightcore else 'Off',
                   'On' if self.slowed else 'Off', round(200 * self.volume)))
                 await self.send(target, embed=embed)
-            elif command == 'help':
-                # Describe effects
-                embed = discord.Embed(title='Bluez audio effects',
-                                      description='''\
+        elif command == 'help':
+            # Describe effects
+            embed = discord.Embed(title='Bluez audio effects',
+                                  description='''\
 `!speed <0.1 - 3>` - adjust the speed of the song playing
 `!pitch <0.1 - 3>` - adjust the pitch of the song playing
 `!bass <1 - 5>` - adjust the bass boost
 `!nightcore` - toggle the nightcore effect on or off
 `!slowed` - toggle the slowed effect on or off
 `!volume <1-200>` - adjust the volume of the song playing''')
-                await self.send(target, embed=embed)
-            elif command == 'clear':
-                # Reset all effects to default
-                if (await self.ensure_dj(target.author, target)):
-                    await self.send(target, '**:warning: You are about to reset all audio effects to their defaults. Continue? (yes/no)**')
-                    def check(m):
-                        return (m.channel == target.channel) and (m.author == target.author) and m.content.lower().strip() in ('yes', 'no')
-                    try:
-                        yesno = (await self.client.wait_for('message', check=check, timeout=10))
-                    except asyncio.TimeoutError:
-                        await self.send(target, '**:no_entry_sign: Timeout**')
-                        return
-                    if yesno.content.lower().strip() == 'no':
-                        return
-                    # Otherwise reset everything
-                    self.tempo = 1.0
-                    self.pitch = 1.0
-                    self.bass = 1
-                    self.nightcore = False
-                    self.slowed = False
-                    self.volume = self.defaultvolume
-                    self.update_audio()
-                    await self.send(target, '**:white_check_mark: All audio effects have been reset to their defaults**')
-            else:
-                await self.send(target, '**:x: Unknown command; should be `!effects`, `!effects help`, or `!effects clear`**')
+            await self.send(target, embed=embed)
+        elif command == 'clear':
+            # Reset all effects to default
+            if (await self.self.ensure_connected(target.author, target)) and \
+               (await self.self.ensure_dj(target.author, target)):
+                await self.send(target, '**:warning: You are about to reset all audio effects to their defaults. Continue? (yes/no)**')
+                def check(m):
+                    return (m.channel == target.channel) and (m.author == target.author) and m.content.lower().strip() in ('yes', 'no')
+                try:
+                    yesno = (await self.client.wait_for('message', check=check, timeout=10))
+                except asyncio.TimeoutError:
+                    await self.send(target, '**:no_entry_sign: Timeout**')
+                    return
+                if yesno.content.lower().strip() == 'no':
+                    return
+                # Otherwise reset everything
+                self.reset_effects()
+                self.update_audio()
+                await self.send(target, '**:white_check_mark: All audio effects have been reset to their defaults**')
+        else:
+            await self.send(target, '**:x: Unknown command; should be `!effects`, `!effects help`, or `!effects clear`**')
 
 
 
@@ -1399,6 +1391,8 @@ class Player(object):
         # This method takes a list of songs, and removes any that are not allowed to be there due to bot settings.
         # Unless at least one bot setting has been changed from its default value, this method will return the
         # whole list of songs and filter nothing out.
+        name = getattr(songs, 'name', None)
+        link = getattr(songs, 'link', None)
         if not songs:
             # nothing to do
             return []
@@ -1430,6 +1424,12 @@ class Player(object):
             elif nuser + len(songs) > self.maxusersongs:
                 songs = songs[:self.maxusersongs - nuser]
                 await self.send(target, '**:warning: Shortening playlist due to reaching the maximum songs you can have in the queue**')
+        # Make sure the name and url are preserved
+        if (name is not None) or (link is not None):
+            if not isinstance(songs, Playlist):
+                songs = Playlist(songs)
+                songs.name = name
+                songs.link = link
         return songs
 
 

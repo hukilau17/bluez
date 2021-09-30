@@ -54,32 +54,63 @@ class Bot(discord.Client):
     def run(self):
         # Run the bot
         discord.Client.run(self, os.getenv('BLUEZ_TOKEN'))
+
+
+
+    async def command(self, command, ctx, *args, **kwargs):
+        # Invoke an individual bot command with the given name, context, and arguments
+        if not self.is_ready():
+            return # Don't respond till we're ready
+        if getattr(ctx, 'guild', None):
+            player = self.players[ctx.guild.id]
+            if ctx.channel in player.blacklist:
+                # do not run commands in blacklisted channels
+                await self.send(ctx, '**:no_entry_sign: This channel cannot be used for music commands.**')
+                return
+            if player.djonly and not player.is_dj(ctx.author):
+                # do not run commands in DJ-only mode except from DJ users
+                await self.send(ctx, '**:x: The bot is currently in DJ only mode, you must have a role named `%s` \
+    or the `Manage Channels` permission to use it**' % player.djrole)
+                return
+        if command in self.global_commands:
+            # If it's a global command, invoke it
+            await getattr(self, 'command_' + command)(ctx, *args, **kwargs)
+        else:
+            # If it's a bot command, invoke it
+            if player is None:
+                await self.send(ctx, '**:warning: This command cannot be used in private messages**')
+            else:
+                await getattr(player, 'command_' + command)(ctx, *args, **kwargs)
         
-
-
+        
+        
+        
     async def on_ready(self):
         # Called when the bot comes online
         # Sets up all slash commands and creates a player for each guild
         for guild in self.guilds:
             self.players[guild.id] = Player(self, guild)
-        for command in self.global_commands:
-            self.slash.add_slash_command(getattr(self, 'command_' + command), command, options=self.command_options.get(command))
         def slashfunc(command):
-            def f(ctx, *args, **kwargs):
-                if getattr(ctx, 'guild', None):
-                    return getattr(self.players[ctx.guild.id], 'command_' + command)(ctx, *args, **kwargs)
-                else:
-                    return ctx.send('**:warning: This command cannot be used in private messages**')
-            return f
+            return lambda ctx, *args, **kwargs: self.command(command, ctx, *args, **kwargs)
+        for command in self.global_commands:
+            self.slash.add_slash_command(slashfunc(command), command, options=self.command_options.get(command))
         for command in self.player_commands:
-            self.slash.add_slash_command(slashfunc(command), command,
-                                         description=getattr(Player, 'command_' + command).__doc__,
-                                         options=self.command_options.get(command, []))
+            if command in self.commands_with_subcommands:
+                for subcommand in self.command_options[command]:
+                    self.slash.add_subcommand(slashfunc(command), command, name=subcommand['name'],
+                                              description=subcommand['description'],
+                                              base_description=getattr(Player, 'command_' + command).__doc__,
+                                              options=subcommand['options'])
+            else:
+                self.slash.add_slash_command(slashfunc(command), command,
+                                             description=getattr(Player, 'command_' + command).__doc__,
+                                             options=self.command_options.get(command, []))
         for alias, command in self.slash_aliases.items():
             self.slash.add_slash_command(slashfunc(command), alias,
                                          description=getattr(Player, 'command_' + command).__doc__,
                                          options=self.command_options.get(command, []))
         await self.slash.sync_all_commands()
+
 
 
     async def on_guild_join(self, guild):
@@ -110,31 +141,12 @@ class Bot(discord.Client):
                 player.bot_messages.append(reply)
         if not message.content.startswith(prefix):
             return # This is not a bot command
-        if player and (message.channel in player.blacklist):
-            reply = (await message.channel.send('**:no_entry_sign: This channel cannot be used for music commands.**'))
-            player.bot_messages.append(message)
-            player.bot_messages.append(reply)
-            return # Do not respond in blacklisted channels
-        if player and player.djonly and not player.is_dj(message.author):
-            reply = (await message.channel.send('**:x: The bot is currently in DJ only mode, you must have a role named `%s` \
-or the `Manage Channels` permission to use it**' % player.djrole))
-            player.bot_messages.append(message)
-            player.bot_messages.append(reply)
-            return
+        # Figure out which command it is and invoke it
         command = message.content[len(prefix):].split(None, 1)[0].lower()
         command = self.aliases.get(command, command)
-        if command in self.global_commands:
-            # If it's a global command, invoke it
-            if player:
-                player.bot_messages.append(message)
-            await getattr(self, 'command_' + command)(message)
-        if command in self.player_commands:
-            # If it's a bot command, invoke it
-            if player is None:
-                await message.channel.send('**:warning: This command cannot be used in private messages**')
-            else:
-                player.bot_messages.append(message)
-                await getattr(player, 'command_' + command)(message)
+        if command in self.global_commands + self.player_commands:
+            player.bot_messages.append(message)
+            await self.command(command, message)
 
 
 
@@ -485,7 +497,6 @@ or the `Manage Channels` permission to use it**' % player.djrole))
         'skip'      : 'voteskip',
         'stop'      : 'pause',
         'continue'  : 'resume',
-        'dc'        : 'disconnect',
         'leave'     : 'disconnect',
         'random'    : 'shuffle',
         'weeb'      : 'nightcore',

@@ -16,4 +16,7 @@ def format_user(user):
 
 
 def format_link(song):
-    return '[%s](%s)' % (song.name, song.link)
+    if getattr(song, 'link', None):
+        return '[%s](%s)' % (song.name, song.link)
+    else:
+        return song.name
