@@ -93,7 +93,7 @@ class Bot(discord.Client):
         def slashfunc(command):
             return lambda ctx, *args, **kwargs: self.command(command, ctx, *args, **kwargs)
         for command in self.global_commands:
-            self.slash.add_slash_command(slashfunc(command), command, options=self.command_options.get(command))
+            self.slash.add_slash_command(slashfunc(command), command, options=self.command_options.get(command, []))
         for command in self.player_commands:
             if command in self.commands_with_subcommands:
                 for subcommand in self.command_options[command]:
