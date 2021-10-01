@@ -1,6 +1,6 @@
 # Bluez Discord bot
 
-Recently, several high-profile music bots have been forced to go offline. Bluez bot (coded by Matthew Kroesche) is an open source, personal use alternative 
+Recently, several high-profile music bots have been forced to go offline. Bluez bot is an open source, personal use alternative 
 to these bots. It is coded in Python and uses Youtube-DL to stream music off of various places on the internet. It has a rich array of features, and its 
 interface is designed to reverse engineer the behavior of a previously existing discord bot that was taken offline in September 2021 as precisely as possible.
 With that being said, there are a couple of things to note:
