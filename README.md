@@ -10,7 +10,7 @@ What this means is that, if you run Bluez bot on your own server, there is a goo
 to open an issue if this happens.
 
 #### Bluez is not particularly scalable.
-The current structure of the code is such that it may not scale well to run simultaneously on thousands of servers. For this reason (together with
+The current structure of the code is such that it may not scale well to run simultaneously on many servers. For this reason (together with
 the fact that it's still in beta), rather than adding the same bot to a ton of different servers, we recommend that users follow the detailed steps 
 below in this README to set up and run their own instance of Bluez. If you are so inclined, you can also feel free to clone the repository and 
 make modifications as you see fit. If you create your own instance of the bot, you can then add it to as many or as few servers as you like; 
