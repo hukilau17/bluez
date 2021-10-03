@@ -7,6 +7,8 @@ import re
 import random
 import collections
 import time
+import io
+import struct
 
 from bluez.song import *
 from bluez.util import *
@@ -22,6 +24,7 @@ class Player(object):
         self.guild = guild
         self.reset_settings()
         self.reset()
+        self.load_settings()
 
 
     # Functions for initializing/resetting the bot's state
@@ -303,12 +306,19 @@ class Player(object):
                 if self.voice_client.is_paused():
                     time_message += ' (paused)'
             time_message = '`%s`' % time_message
-            embed = discord.Embed(title='Now Playing \u266a', description = \
+            embed = discord.Embed(description = \
                                   format_link(song) + '\n\n' + \
                                   progress_bar + '\n\n' + \
                                   time_message + '\n\n' + \
                                   '`Requested by:` ' + format_user(song.user),
                                   color=discord.Color.blue())
+            if hasattr(target, 'author'):
+                icon_url = target.author.avatar_url
+            elif hasattr(target, 'avatar_url'):
+                icon_url = target.avatar_url
+            else:
+                icon_url = self.bot.user.avatar_url
+            embed.set_author(name='Now Playing \u266a', icon_url=icon_url)
             if song.thumbnail:
                 embed.set_thumbnail(url=song.thumbnail)
             await self.send(target, embed=embed)
@@ -338,11 +348,13 @@ class Player(object):
                                (j, format_link(song), format_time(song.length),
                                 format_user(song.user))
             description += '**%d songs in queue | %s total length**\n\n' % (n, total)
-            description += 'Page %d/%d | Loop: %s | Queue Loop: %s' % \
-                           (i+1, npages,
-                            ':white_check_mark:' if self.looping else ':x:',
-                            ':white_check_mark:' if self.queue_looping else ':x:')
             embed.description = description
+            footer = 'Page %d/%d | Loop: %s | Queue Loop: %s' % \
+                           (i+1, npages,
+                            '\u2705' if self.looping else '\u274c',
+                            '\u2705' if self.queue_looping else '\u274c')
+            embed.set_footer(text=footer,
+                             icon_url=target.author.avatar_url)
             embeds.append(embed)
         await self.client.post_multipage_embed(embeds, target, start_index)
 
@@ -364,13 +376,15 @@ class Player(object):
                     position = str(position + 1)
             if len(songs) > 1:
                 # This is a playlist
-                embed = discord.Embed(title='Playlist added to queue', description=format_link(songs))
+                embed = discord.Embed(description=format_link(songs))
+                embed.set_author(name='Playlist added to queue', icon_url=target.author.avatar_url)
                 embed.add_field(name='Estimated time until playing', value=time, inline=False)
                 embed.add_field(name='Position in queue', value=position, inline=True)
                 embed.add_field(name='Enqueued', value='`%d` song%s' % (len(songs), '' if len(songs) == 1 else 's'), inline=True)
             elif time != 'Now':
                 # This is a single song added to the queue
-                embed = discord.Embed(title='Added to queue', description=songs[0].name, url=songs[0].link)
+                embed = discord.Embed(description=format_link(songs[0]))
+                embed.set_author(name='Added to queue', icon_url=target.author.avatar_url)
                 embed.add_field(name='Channel', value=songs[0].channel, inline=True)
                 embed.add_field(name='Song Duration', value=format_time(songs[0].length), inline=True)
                 embed.add_field(name='Estimated time until playing', value=time, inline=True)
@@ -497,8 +511,8 @@ class Player(object):
             songs = (await songs_from_search(query, target.author, 10))
             if songs:
                 # Print out an embed of the songs
-                embed = discord.Embed(title='Search results for `%s`' % query,
-                                      description = '\n\n'.join(['%d. %s' % (i+1, format_link(song)) for i, song in enumerate(songs)]))
+                embed = discord.Embed(description = '\n\n'.join(['%d. %s' % (i+1, format_link(song)) for i, song in enumerate(songs)]))
+                embed.set_author(name='Search results for `%s`' % query, icon_url=target.author.avatar_url)
                 await self.send(target, embed=embed)
             else:
                 # No results
@@ -656,7 +670,7 @@ class Player(object):
                 else:
                     await self.send(target, '**Skipping?** (%d/%d people)%s' \
                                     % (len(self.votes), int(.75 * (len(self.voice_channel.members) - 1)),
-                                       '**`!forceskip` or `!fs` to force**' if self.is_dj(target.author) else ''))
+                                       ' **`!forceskip` or `!fs` to force**' if self.is_dj(target.author) else ''))
                     
 
     async def command_forceskip(self, target):
@@ -1101,6 +1115,9 @@ class Player(object):
             await self.send(target, '**:white_check_mark: All settings have been reset to their defaults**')
         else:
             await self.send(target, '**:x: Unknown setting `%s`**' % setting)
+            return
+        # Save off the settings if we get to this point
+        self.save_settings()
 
 
 
@@ -1254,11 +1271,15 @@ class Player(object):
                 number = target.content[len(self.prefix):].split()[1]
             except IndexError:
                 number = None
-        if number is None:
-            number = len(self.bot_messages)
-        for msg in self.bot_messages[-number:]:
-            await msg.delete()
-        del self.bot_messages[-number:]
+        await self.send(target)
+        count = 0
+        for message in self.bot_messages[:]:
+            if message.channel == target.channel:
+                self.bot_messages.remove(message)
+                await message.delete()
+                count += 1
+                if (number is not None) and (count == number):
+                    break
                     
             
     
@@ -1446,10 +1467,92 @@ class Player(object):
                 return target.content[len(self.prefix):].split(None, 1)[1]
             except IndexError:
                 pass
-    
-    
-        
-        
-        
-    
+
+
+
+
+    def load_settings(self):
+        # Load the bot settings from S3
+        if self.client.s3:
+            file = io.BytesIO()
+            try:
+                self.client.s3.download_fileobj(self.client.s3_bucket, 'Guild%d' % self.guild.id, file)
+            except:
+                return
+            file.seek(0)
+            # Reading boolean values
+            packed_int = file.read(1)[0]
+            self.announcesongs     = bool(packed_int & 0x01)
+            self.preventduplicates = bool(packed_int & 0x02)
+            self.djonly            = bool(packed_int & 0x04)
+            self.djplaylists       = bool(packed_int & 0x08)
+            self.alwaysplaying     = bool(packed_int & 0x10)
+            # Reading integers
+            size = struct.calcsize('HHB')
+            self.maxqueuelength, self.maxusersongs, self.defaultvolume = struct.unpack('3H', file.read(size))
+            if self.maxqueuelength == 0:
+                self.maxqueuelength = None
+            if self.maxusersongs == 0:
+                self.maxusersongs = None
+            self.defaultvolume /= 200.0
+            # Reading strings
+            prefix_len = file.read(1)[0]
+            self.prefix = file.read(prefix_len).decode('utf-8')
+            djrole_len = file.read(1)[0]
+            self.djrole = file.read(djrole_len).decode('utf-8')
+            autoplay_len = struct.unpack('H', file.read(struct.calcsize('H')))[0]
+            if autoplay_len:
+                self.autoplay = file.read(autoplay_len).decode('utf-8')
+            else:
+                self.autoplay = None
+            # Reading channels
+            blacklist_len = struct.unpack('H', file.read(struct.calcsize('H')))[0]
+            size = struct.calcsize('%dQ' % blacklist_len)
+            blacklist_ids = struct.unpack('%dQ' % blacklist_len, file.read(size))
+            self.blacklist = [channel for channel in self.guild.text_channels if channel.id in blacklist_ids]
+                
+
+
+
+    def save_settings(self):
+        # Save the bot settings to S3
+        if self.client.s3:
+            file = io.BytesIO()
+            # Writing boolean values
+            packed_int = 0
+            if self.announcesongs    : packed_int |= 0x01
+            if self.preventduplicates: packed_int |= 0x02
+            if self.djonly           : packed_int |= 0x04
+            if self.djplaylists      : packed_int |= 0x08
+            if self.alwaysplaying    : packed_int |= 0x10
+            file.write(bytes([packed_int]))
+            # Writing integers
+            file.write(struct.pack('HHB',
+                                   self.maxqueuelength or 0,
+                                   self.maxusersongs or 0,
+                                   int(round(self.defaultvolume * 200))))
+            # Writing strings
+            prefix = self.prefix.encode('utf-8')
+            file.write(bytes([len(prefix)]))
+            file.write(prefix)
+            djrole = self.djrole.encode('utf-8')
+            file.write(bytes([len(djrole)]))
+            file.write(djrole)
+            if self.autoplay:
+                autoplay = self.autoplay.encode('utf-8')
+                file.write(struct.pack('H', len(autoplay)))
+                file.write(autoplay)
+            else:
+                file.write(struct.pack('H', 0))
+            # Writing channels
+            file.write(struct.pack('H', len(self.blacklist)))
+            for channel in self.blacklist:
+                file.write(struct.pack('Q', channel.id))
+            # Save the file
+            file.seek(0)
+            try:
+                self.client.s3.upload_fileobj(file, self.client.s3_bucket, 'Guild%d' % self.guild.id)
+            except:
+                pass
+                
             

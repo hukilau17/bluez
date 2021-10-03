@@ -7,10 +7,15 @@ import re
 import os
 import logging
 import lyricsgenius
+import boto3
 
 from bluez.player import Player
+from bluez.util import *
 
 BLUEZ_DEBUG = bool(int(os.getenv('BLUEZ_DEBUG', '0')))
+BLUEZ_INVITE_LINK = os.getenv('BLUEZ_INVITE_LINK')
+BLUEZ_SOURCE_LINK = os.getenv('BLUEZ_SOURCE_LINK', 'https://github.com/hukilau17/bluez')
+BLUEZ_S3_BUCKET = os.getenv('BLUEZ_BUCKET_NAME')
 
 
 
@@ -27,8 +32,13 @@ class Bot(discord.Client):
         intents.members = True
         discord.Client.__init__(self, intents=intents)
         self.players = {}
-        self.genius = lyricsgenius.Genius(verbose = BLUEZ_DEBUG)
+        try:
+            self.genius = lyricsgenius.Genius(verbose = BLUEZ_DEBUG)
+        except:
+            # this should only happen if you haven't provided a token for the genius API
+            self.genius = None
         self.slash = discord_slash.SlashCommand(self)
+        self.init_s3()
         if BLUEZ_DEBUG:
             logging.basicConfig(level=logging.DEBUG)
 
@@ -48,6 +58,24 @@ class Bot(discord.Client):
             player = self.players[target.guild.id]
             player.bot_messages.append(message)
         return message
+
+
+
+    def init_s3(self):
+        if BLUEZ_S3_BUCKET is None:
+            self.s3 = None
+        else:
+            self.s3 = boto3.resource('s3')
+            try:
+                for bucket in s3.list_buckets()['Buckets']:
+                    if bucket['Name'] == BLUEZ_S3_BUCKET:
+                        break
+                else:
+                    self.s3.create_bucket(Bucket=BLUEZ_S3_BUCKET)
+            except:
+                self.s3 = None
+            else:
+                self.s3_bucket = BLUEZ_S3_BUCKET
         
 
 
@@ -72,6 +100,8 @@ class Bot(discord.Client):
                 await self.send(ctx, '**:x: The bot is currently in DJ only mode, you must have a role named `%s` \
     or the `Manage Channels` permission to use it**' % player.djrole)
                 return
+        else:
+            player = None
         if command in self.global_commands:
             # If it's a global command, invoke it
             await getattr(self, 'command_' + command)(ctx, *args, **kwargs)
@@ -147,7 +177,8 @@ class Bot(discord.Client):
         command = message.content[len(prefix):].split(None, 1)[0].lower()
         command = self.aliases.get(command, command)
         if command in self.global_commands + self.player_commands:
-            player.bot_messages.append(message)
+            if player:
+                player.bot_messages.append(message)
             await self.command(command, message)
 
 
@@ -531,6 +562,7 @@ class Bot(discord.Client):
             embed = discord.Embed(title='Aliases!')
             page = commands[20*i : 20*(i+1)]
             embed.description = '\n'.join(page) + ('\n\nPage %d/%d' % (i+1, npages))
+            embed.set_footer(text='Bluez, ready for your command!', icon_url=self.user.avatar_url)
             embeds.append(embed)
         await self.post_multipage_embed(embeds, target)
 
@@ -563,6 +595,7 @@ class Bot(discord.Client):
             embed = discord.Embed(title='Bluez bot commands')
             page = commands[10*i : 10*(i+1)]
             embed.description = '\n\n'.join(page) + ('\n\nPage %d/%d' % (i+1, npages))
+            embed.set_footer(text='Bluez, ready for your command!', icon_url=self.user.avatar_url)
             embeds.append(embed)
         await self.post_multipage_embed(embeds, target)
             
@@ -579,23 +612,33 @@ class Bot(discord.Client):
     async def command_info(self, target):
         '''Show information about Bluez'''
         # !info
+        if BLUEZ_INVITE_LINK:
+            invite = '\n[Invite](%s)' % BLUEZ_INVITE_LINK
+        else:
+            invite = ''
         embed = discord.Embed(title='About Bluez',
-                              description='''Bluez is a personal-use, open source music bot implemented in Python by Matthew Kroesche.
-[Source](https://github.com/hukilau17/bluez)''')
+                              description='''Bluez is a personal-use, open source music bot implemented in Python.
+[Source](%s)%s''' % (BLUEZ_SOURCE_LINK, invite))
         await self.send(target, embed=embed)
 
 
     async def command_invite(self, target):
-        '''Show the source link for Bluez'''
+        '''Show the links for Bluez'''
         # !invite
-        await self.send(target, '**:no_entry_sign: Do not add Bluez to other servers, since it is currently in beta and strictly \
-for personal use. Source code is freely available online: `https://github.com/hukilau17/bluez`**')
+        if BLUEZ_INVITE_LINK:
+            await self.send(target, '**:link: Use this link to invite Bluez to other servers:** %s' % BLUEZ_INVITE_LINK)
+        else:
+            await self.send(target, '**:no_entry_sign: Do not add Bluez to other servers, since it is currently in beta and strictly \
+for personal use. Source code is freely available online: `%s`**' % BLUEZ_SOURCE_LINK)
 
 
 
     async def command_lyrics(self, target, song=None):
         '''Get the lyrics of a song (by default the currently playing song)'''
         # !lyrics
+        if self.genius is None:
+            await self.send(target, '**:x: Lyric searching is not enabled.**')
+            return
         if getattr(target, 'guild', None):
             player = self.players[target.guild.id]
             prefix = player.prefix
@@ -642,9 +685,10 @@ for personal use. Source code is freely available online: `https://github.com/hu
                 # make sure the lyrics aren't too long to fit into a single embed
                 # the lyrics to "American Pie" are over 4000 characters long :P
                 embed = discord.Embed(title='%s - %s' % (song.artist, song.title),
-                                      description=lyrics[4000 * i : 4000 * (i+1)],
+                                      description=lyrics[4000 * i : 4000 * (i+1)] + '\n\nPage %d/%d' % (i+1, npages),
                                       color=discord.Color.green())
                 embed.set_thumbnail(url=song.song_art_image_thumbnail_url)
+                embed.set_footer(text='Requested by %s' % format_user(target.author), icon_url=target.author.avatar_url)
                 embeds.append(embed)
             await self.post_multipage_embed(embeds, target)
         else:

@@ -10,7 +10,7 @@ def format_time(time):
 
 def format_user(user):
     str = '%s#%s' % (user.name, user.discriminator)
-    if user.nick:
+    if getattr(user, 'nick', None):
         str = '%s (%s)' % (user.nick, str)
     return str
 
