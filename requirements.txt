@@ -5,3 +5,4 @@ ffmpeg
 pynacl
 lyricsgenius
 discord-py-slash-command
+boto3
