@@ -6,6 +6,8 @@ import asyncio
 import re
 import os
 import logging
+import signal
+import datetime
 import lyricsgenius
 import boto3
 
@@ -16,6 +18,7 @@ BLUEZ_DEBUG = bool(int(os.getenv('BLUEZ_DEBUG', '0')))
 BLUEZ_INVITE_LINK = os.getenv('BLUEZ_INVITE_LINK')
 BLUEZ_SOURCE_LINK = os.getenv('BLUEZ_SOURCE_LINK', 'https://github.com/hukilau17/bluez')
 BLUEZ_S3_BUCKET = os.getenv('BLUEZ_BUCKET_NAME')
+BLUEZ_RESET_TIME = os.getenv('BLUEZ_RESET_TIME')
 
 
 
@@ -62,6 +65,8 @@ class Bot(discord.Client):
 
 
     def init_s3(self):
+        # Initialize the Amazon S3 client.
+        # This does nothing if the environment variable BLUEZ_S3_BUCKET is not defined
         if BLUEZ_S3_BUCKET is None:
             self.s3 = None
         else:
@@ -82,6 +87,37 @@ class Bot(discord.Client):
     def run(self):
         # Run the bot
         discord.Client.run(self, os.getenv('BLUEZ_TOKEN'))
+
+
+
+    def get_prefix(self, target):
+        # Get the prefix for the given message
+        if getattr(target, 'guild', None):
+            return self.players[target.guild.id].prefix
+        else:
+            return '!'
+
+
+
+    async def schedule_reset(self):
+        # Arrange for the process to terminate itself (and then be restarted)
+        # This does nothing if the environment variable BLUEZ_RESET_TIME is not defined
+        if BLUEZ_RESET_TIME is not None:
+            # Build a datetime object that represents the next time we're going to terminate this process
+            reset_time = datetime.datetime.strptime(BLUEZ_RESET_TIME, '%H:%M:%S')
+            now = datetime.datetime.utcnow()
+            reset_time = datetime.datetime.combine(now.date(), reset_time.time())
+            if reset_time < now:
+                reset_time += datetime.timedelta(days=1)
+            delta = reset_time - now
+            # Sleep for the appropriate number of seconds
+            logging.warning('Bluez resetting in %s' % delta)
+            await asyncio.sleep(delta.total_seconds())
+            # Then reset
+            logging.warning('Bluez resetting now!')
+            signal.raise_signal(signal.SIGTERM)
+            
+            
 
 
 
@@ -120,6 +156,9 @@ class Bot(discord.Client):
         # Sets up all slash commands and creates a player for each guild
         for guild in self.guilds:
             self.players[guild.id] = Player(self, guild)
+        # Schedule reset task
+        self.reset_task = asyncio.create_task(self.schedule_reset())
+        # Set up slash commands
         def slashfunc(command):
             return lambda ctx, *args, **kwargs: self.command(command, ctx, *args, **kwargs)
         for command in self.global_commands:
@@ -215,12 +254,16 @@ class Bot(discord.Client):
                 try:
                     reaction, user = (await self.wait_for('reaction_add', timeout=30, check=check))
                 except asyncio.TimeoutError:
-                    await message.clear_reaction('\u25c0')
-                    await message.clear_reaction('\u25b6')
+                    if target.guild:
+                        # can't remove reactions in DMs
+                        await message.clear_reaction('\u25c0')
+                        await message.clear_reaction('\u25b6')
                     break
                 else:
                     # Remove the reaction and advance as appropriate
-                    await reaction.remove(user)
+                    if target.guild:
+                        # can't remove reactions in DMs
+                        await reaction.remove(user)
                     if reaction.emoji == '\u25c0': # page backward
                         if current_page > 0:
                             current_page -= 1
@@ -364,6 +407,10 @@ class Bot(discord.Client):
                           'description': 'the amount of time to skip forward by',
                           'type': discord_slash.SlashCommandOptionType.STRING,
                           'required': True}],
+        'forceskip':    [{'name': 'position',
+                          'description': 'the position of the song to skip to',
+                          'type': discord_slash.SlashCommandOptionType.INTEGER,
+                          'required': False}],
         'queue':        [{'name': 'page',
                           'description': 'the page number to show',
                           'type': discord_slash.SlashCommandOptionType.INTEGER,
@@ -554,8 +601,9 @@ class Bot(discord.Client):
                 aliases[value] = []
             aliases[value].append(key)
         commands = []
+        prefix = self.get_prefix(target)
         for key in sorted(aliases):
-            commands.append('!%s - `%s`' % (key, ', '.join(sorted(aliases[key]))))
+            commands.append('%s%s - `%s`' % (prefix, key, ', '.join(sorted(aliases[key]))))
         embeds = []
         npages = (len(commands) - 1) // 20 + 1
         for i in range(npages):
@@ -577,6 +625,7 @@ class Bot(discord.Client):
                 aliases[value] = []
             aliases[value].append(key)
         commands = []
+        prefix = self.get_prefix(target)
         for command in sorted(self.player_commands + self.global_commands):
             syntax = self.command_syntax.get(command, '')
             if syntax:
@@ -588,7 +637,7 @@ class Bot(discord.Client):
             alias = aliases.get(command, '')
             if alias:
                 alias = ' (also known as: `%s`)' % ', '.join(sorted(alias))
-            commands.append('`!%s%s` - %s%s' % (command, syntax, doc, alias))
+            commands.append('`%s%s%s` - %s%s' % (prefix, command, syntax, doc, alias))
         embeds = []
         npages = (len(commands) - 1) // 10 + 1
         for i in range(npages):
@@ -639,12 +688,7 @@ for personal use. Source code is freely available online: `%s`**' % BLUEZ_SOURCE
         if self.genius is None:
             await self.send(target, '**:x: Lyric searching is not enabled.**')
             return
-        if getattr(target, 'guild', None):
-            player = self.players[target.guild.id]
-            prefix = player.prefix
-        else:
-            player = None
-            prefix = '!'
+        prefix = self.get_prefix(target)
         if isinstance(target, discord.Message):
             try:
                 song = target.content[len(prefix):].split(None, 1)[1]
@@ -652,7 +696,8 @@ for personal use. Source code is freely available online: `%s`**' % BLUEZ_SOURCE
                 song = None
         is_now_playing = False
         if not song:
-            if player:
+            if getattr(target, 'guild', None):
+                player = self.players[target.guild.id]
                 if (await player.ensure_playing(target.author, target)):
                     song = player.now_playing.name
                     is_now_playing = True

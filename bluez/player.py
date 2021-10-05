@@ -94,7 +94,7 @@ class Player(object):
     async def ensure_connected(self, member, target):
         # Make sure the bot has joined some voice channel
         if self.voice_channel is None:
-            await self.send(target, '**:x: I am not connected to a voice channel.** Type `!join` to get me in one')
+            await self.send(target, '**:x: I am not connected to a voice channel.** Type `%sjoin` to get me in one' % self.prefix)
             return False
         return True
 
@@ -104,7 +104,7 @@ class Player(object):
         if not (await self.ensure_connected(member, target)):
             return False
         if self.now_playing is None:
-            await self.send(target, '**:x: I am not currently playing anything.** Type `!play` to play a song')
+            await self.send(target, '**:x: I am not currently playing anything.** Type `%splay` to play a song' % self.prefix)
             return False
         return True
 
@@ -114,7 +114,7 @@ class Player(object):
         if not (await self.ensure_connected(member, target)):
             return False
         if not self.queue:
-            await self.send(target, '**:x: The queue is currently empty.** Type `!play` to play a song')
+            await self.send(target, '**:x: The queue is currently empty.** Type `%splay` to play a song' % self.prefix)
             return False
         return True
 
@@ -229,8 +229,9 @@ class Player(object):
                 self.voice_client.play(source, after=self._play_next_callback)
                 self.last_started_playing = time.time() - (self.seek_pos or 0)
                 self.last_paused = None
+                announce = (self.announcesongs and (self.seek_pos is None))
                 self.seek_pos = None
-                if self.announcesongs:
+                if announce:
                     await self.np_message(self.text_channel)
         else:
             self.now_playing = None
@@ -317,7 +318,7 @@ class Player(object):
             elif hasattr(target, 'avatar_url'):
                 icon_url = target.avatar_url
             else:
-                icon_url = self.bot.user.avatar_url
+                icon_url = self.client.user.avatar_url
             embed.set_author(name='Now Playing \u266a', icon_url=icon_url)
             if song.thumbnail:
                 embed.set_thumbnail(url=song.thumbnail)
@@ -370,7 +371,11 @@ class Player(object):
                 if self.now_playing is not None:
                     time += max(self.now_playing.adjusted_length - self.get_current_time(), 0)
                 if time == 0:
-                    time = position = 'Now'
+                    if self.now_playing and not self.now_playing.length:
+                        time = 'Unknown'
+                        position = str(position + 1)
+                    else:
+                        time = position = 'Now'
                 else:
                     time = format_time(time)
                     position = str(position + 1)
@@ -382,7 +387,6 @@ class Player(object):
                 embed.add_field(name='Position in queue', value=position, inline=True)
                 embed.add_field(name='Enqueued', value='`%d` song%s' % (len(songs), '' if len(songs) == 1 else 's'), inline=True)
             elif time != 'Now':
-                # This is a single song added to the queue
                 embed = discord.Embed(description=format_link(songs[0]))
                 embed.set_author(name='Added to queue', icon_url=target.author.avatar_url)
                 embed.add_field(name='Channel', value=songs[0].channel, inline=True)
@@ -444,7 +448,7 @@ class Player(object):
         if (await self.ensure_joined(target.author, target)):
             query = self.get_string(target, query)
             if not query:
-                await self.usage_embed('!play [Link or query]', target)
+                await self.usage_embed('%splay [Link or query]' % self.prefix, target)
                 return
             songs = (await self.songs_from_query(query, target))
             songs = (await self.trim_songs(songs, target))
@@ -465,7 +469,7 @@ class Player(object):
         if (await ensure(target.author, target)):
             query = self.get_string(target, query)
             if not query:
-                await self.usage_embed('!playtop [Link or query]', target)
+                await self.usage_embed('%splaytop [Link or query]' % self.prefix, target)
                 return
             songs = (await self.songs_from_query(query, target))
             songs = (await self.trim_songs(songs, target))
@@ -485,7 +489,7 @@ class Player(object):
         if (await ensure(target.author, target)):
             query = self.get_string(target, query)
             if not query:
-                await self.usage_embed('!playskip [Link or query]', target)
+                await self.usage_embed('%splayskip [Link or query]' % self.prefix, target)
                 return
             songs = (await self.songs_from_query(query, target))
             songs = (await self.trim_songs(songs, target))
@@ -505,14 +509,16 @@ class Player(object):
                 return
             query = self.get_string(target, query)
             if not query:
-                await self.usage_embed('!search [query]', target)
+                await self.usage_embed('%ssearch [query]' % self.prefix, target)
                 return
             await self.send(target, '**:arrow_forward: Searching :mag: `%s`**' % query)
             songs = (await songs_from_search(query, target.author, 10))
             if songs:
                 # Print out an embed of the songs
-                embed = discord.Embed(description = '\n\n'.join(['%d. %s' % (i+1, format_link(song)) for i, song in enumerate(songs)]))
-                embed.set_author(name='Search results for `%s`' % query, icon_url=target.author.avatar_url)
+                description = '\n\n'.join(['`%d.` %s **[%s]**' % (i+1, format_link(song), format_time(song.length)) for i, song in enumerate(songs)])
+                description += '\n\n\n\n**Type a number to make a choice, Type `cancel` to exit**'
+                embed = discord.Embed(description=description)
+                embed.set_author(name=(target.author.nick or target.author.name), icon_url=target.author.avatar_url)
                 await self.send(target, embed=embed)
             else:
                 # No results
@@ -551,7 +557,7 @@ class Player(object):
         if (await self.ensure_joined(target.author, target)):
             query = self.get_string(target, query)
             if not query:
-                await self.usage_embed('!soundcloud [Link or query]', target)
+                await self.usage_embed('%ssoundcloud [Link or query]' % self.prefix, target)
                 return
             songs = (await self.songs_from_query(query, target, soundcloud=True))
             songs = (await self.trim_songs(songs, target))
@@ -585,7 +591,7 @@ class Player(object):
            (await self.ensure_dj(target.author, target)):
             time = self.get_string(target, time)
             if time is None:
-                await self.usage_embed('!seek [time]', target)
+                await self.usage_embed('%sseek [time]' % self.prefix, target)
                 return
             else:
                 time = (await self.parse_time(time, target))
@@ -604,7 +610,7 @@ class Player(object):
            (await self.ensure_dj(target.author, target)):
             time = self.get_string(target, time)
             if time is None:
-                await self.usage_embed('!rewind [seconds]', target)
+                await self.usage_embed('%srewind [seconds]' % self.prefix, target)
                 return
             else:
                 time = (await self.parse_time(time, target))
@@ -621,7 +627,7 @@ class Player(object):
            (await self.ensure_dj(target.author, target)):
             time = self.get_string(target, time)
             if time is None:
-                await self.usage_embed('!forward [seconds]', target)
+                await self.usage_embed('%sforward [seconds]' % self.prefix, target)
                 return
             else:
                 time = (await self.parse_time(time, target))
@@ -670,14 +676,33 @@ class Player(object):
                 else:
                     await self.send(target, '**Skipping?** (%d/%d people)%s' \
                                     % (len(self.votes), int(.75 * (len(self.voice_channel.members) - 1)),
-                                       ' **`!forceskip` or `!fs` to force**' if self.is_dj(target.author) else ''))
+                                       ' **`%sforceskip` or `%sfs` to force**' % (self.prefix, self.prefix) \
+                                       if self.is_dj(target.author) else ''))
                     
 
-    async def command_forceskip(self, target):
+    async def command_forceskip(self, target, position=None):
         '''Skip the currently playing song immediately'''
         # !forceskip
         if (await self.ensure_playing(target.author, target)) and \
            (await self.ensure_dj(target.author, target)):
+            if isinstance(target, discord.Message):
+                try:
+                    position = target.content[len(self.prefix):].split(None, 1)[1]
+                except IndexError:
+                    position = None
+                else:
+                    try:
+                        position = int(position)
+                    except ValueError:
+                        await self.usage_embed('%sforceskip [position]' % self.prefix, target)
+                        return
+            if position is None:
+                position = 1
+            for n in range(position-1):
+                if self.queue:
+                    self.queue.popleft()
+                else:
+                    break
             await self.skip(target)
 
 
@@ -752,7 +777,7 @@ class Player(object):
                         numbers.append(1)
                     old, new = numbers
                 except ValueError:
-                    await self.usage_embed('!move [old position] [new position]', target)
+                    await self.usage_embed('%smove [old position] [new position]' % self.prefix, target)
                     return
             elif new is None:
                 new = 1
@@ -778,7 +803,7 @@ class Player(object):
                 try:
                     position = int(position)
                 except ValueError:
-                    await self.usage_embed('!skipto [position]', target)
+                    await self.usage_embed('%sskipto [position]' % self.prefix, target)
                     return
             if not (1 <= position <= len(self.queue)):
                 await self.send(target, '**:x: Invalid position, should be between 1 and %d**' % len(self.queue))
@@ -817,7 +842,7 @@ class Player(object):
                         if m:
                             numbers.extend(range(int(m.group(1)), int(m.group(2))+1))
                         else:
-                            await self.usage_embed('!remove [positions]', target)
+                            await self.usage_embed('%sremove [positions]' % self.prefix, target)
                             return
             else:
                 numbers = [number]
@@ -901,20 +926,20 @@ class Player(object):
         if setting in ('', 'show'):
             # Print out all the settings
             embed = discord.Embed(title='Bluez Settings',
-                                  description='Use the command format `!settings <options>` to view more info about an option.')
-            embed.add_field(name=':exclamation: Prefix', value='`!settings prefix`', inline=True)
-            embed.add_field(name=':no_entry_sign: Blacklist', value='`!settings blacklist`', inline=True)
-            embed.add_field(name=':musical_note: Autoplay', value='`!settings autoplay`', inline=True)
-            embed.add_field(name=':bell: Announce Songs', value='`!settings announcesongs`', inline=True)
-            embed.add_field(name=':hash: Max Queue Length', value='`!settings maxqueuelength`', inline=True)
-            embed.add_field(name=':1234: Max User Songs', value='`!settings maxusersongs`', inline=True)
-            embed.add_field(name=':notes: Duplicate Song Prevention', value='`!settings preventduplicates`', inline=True)
-            embed.add_field(name=':loud_sound: Default Volume', value='`!settings defaultvolume`', inline=True)
-            embed.add_field(name=':1234: DJ Only Playlists', value='`!settings djplaylists`', inline=True)
-            embed.add_field(name=':no_pedestrians: DJ Only', value='`!settings djonly`', inline=True)
-            embed.add_field(name=':page_with_curl: Set DJ Role', value='`!settings djrole`', inline=True)
-            embed.add_field(name=':infinity: Always Playing', value='`!settings alwaysplaying`', inline=True)
-            embed.add_field(name=':recycle: Reset', value='`!settings reset`', inline=True)
+                                  description='Use the command format `%ssettings <options>` to view more info about an option.' % self.prefix)
+            embed.add_field(name=':exclamation: Prefix', value='`%ssettings prefix`' % self.prefix, inline=True)
+            embed.add_field(name=':no_entry_sign: Blacklist', value='`%ssettings blacklist`' % self.prefix, inline=True)
+            embed.add_field(name=':musical_note: Autoplay', value='`%ssettings autoplay`' % self.prefix, inline=True)
+            embed.add_field(name=':bell: Announce Songs', value='`%ssettings announcesongs`' % self.prefix, inline=True)
+            embed.add_field(name=':hash: Max Queue Length', value='`%ssettings maxqueuelength`' % self.prefix, inline=True)
+            embed.add_field(name=':1234: Max User Songs', value='`%ssettings maxusersongs`' % self.prefix, inline=True)
+            embed.add_field(name=':notes: Duplicate Song Prevention', value='`%ssettings preventduplicates`' % self.prefix, inline=True)
+            embed.add_field(name=':loud_sound: Default Volume', value='`%ssettings defaultvolume`' % self.prefix, inline=True)
+            embed.add_field(name=':1234: DJ Only Playlists', value='`%ssettings djplaylists`' % self.prefix, inline=True)
+            embed.add_field(name=':no_pedestrians: DJ Only', value='`%ssettings djonly`' % self.prefix, inline=True)
+            embed.add_field(name=':page_with_curl: Set DJ Role', value='`%ssettings djrole`' % self.prefix, inline=True)
+            embed.add_field(name=':infinity: Always Playing', value='`%ssettings alwaysplaying`' % self.prefix, inline=True)
+            embed.add_field(name=':recycle: Reset', value='`%ssettings reset`' % self.prefix, inline=True)
             await self.send(target, embed=embed)
             return
         if (setting == 'blacklist') and isinstance(target, discord.Message):
@@ -925,7 +950,7 @@ class Player(object):
                 embed = discord.Embed(title='Bluez Settings - :exclamation: Prefix',
                                       description='Changes the prefix used to address Bluez bot.')
                 embed.add_field(name=':page_facing_up: Current Setting:', value='`%s`' % self.prefix)
-                embed.add_field(name=':pencil2: Update:', value='`!settings prefix [New Prefix]`')
+                embed.add_field(name=':pencil2: Update:', value='`%ssettings prefix [New Prefix]`' % self.prefix)
                 embed.add_field(name=':white_check_mark: Valid Settings', value='`Any text, at most 5 characters (e.g. !)`')
                 await self.send(target, embed=embed)
                 return
@@ -935,7 +960,7 @@ class Player(object):
                 embed.add_field(name=':page_facing_up: Current Setting:',
                                 value=('`%s`' % ', '.join([channel.mention for channel in self.blacklist]) \
                                        if self.blacklist else 'Blacklist empty'))
-                embed.add_field(name=':pencil2: Update:', value='`!settings blacklist [Mention Channel]`')
+                embed.add_field(name=':pencil2: Update:', value='`%ssettings blacklist [Mention Channel]`' % self.prefix)
                 embed.add_field(name=':white_check_mark: Valid Settings:', value='`Any number of mentioned text channels`')
                 await self.send(target, embed=embed)
                 return
@@ -1154,12 +1179,12 @@ class Player(object):
             # Describe effects
             embed = discord.Embed(title='Bluez audio effects',
                                   description='''\
-`!speed <0.1 - 3>` - adjust the speed of the song playing
-`!pitch <0.1 - 3>` - adjust the pitch of the song playing
-`!bass <1 - 5>` - adjust the bass boost
-`!nightcore` - toggle the nightcore effect on or off
-`!slowed` - toggle the slowed effect on or off
-`!volume <1-200>` - adjust the volume of the song playing''')
+`%sspeed <0.1 - 3>` - adjust the speed of the song playing
+`%spitch <0.1 - 3>` - adjust the pitch of the song playing
+`%sbass <1 - 5>` - adjust the bass boost
+`%snightcore` - toggle the nightcore effect on or off
+`%sslowed` - toggle the slowed effect on or off
+`%svolume <1-200>` - adjust the volume of the song playing''' % ((self.prefix,) * 6))
             await self.send(target, embed=embed)
         elif command == 'clear':
             # Reset all effects to default
@@ -1180,7 +1205,8 @@ class Player(object):
                 self.update_audio()
                 await self.send(target, '**:white_check_mark: All audio effects have been reset to their defaults**')
         else:
-            await self.send(target, '**:x: Unknown command; should be `!effects`, `!effects help`, or `!effects clear`**')
+            await self.send(target, '**:x: Unknown command; should be `%seffects`, `%seffects help`, or `%seffects clear`**' % \
+                            (self.prefix, self.prefix, self.prefix))
 
 
 

@@ -66,8 +66,11 @@ class Song(object):
         # initialize the data for a Song object
         self.name = self.data.get('title', '[no title]')
         self.length = self.adjusted_length = self.data.get('duration') or 0
-        self.thumbnail = self.data.get('thumbnail', None)
+        self.thumbnail = self.data.get('thumbnail')
         self.channel = self.data.get('channel', 'None')
+        self.artist = self.data.get('artist')
+        self.track = self.data.get('track')
+        self.asr = self.data.get('asr', 44100)
         if 'extra_info_hack' in self.data:
             self.url = None
             self.link = None
@@ -79,7 +82,9 @@ class Song(object):
             self.url = self.data['url']
             self.link = self.data.get('webpage_url', getattr(self, 'link', None))
 
-
+        
+        
+        
     def process(self):
         # process a Song (i.e. actually ask youtube-dl to find the URL
         # for it rather than delaying it till later). This does nothing if the
@@ -127,7 +132,7 @@ class Song(object):
         # then tempo can be additionally altered by using the atempo filter
         if (self.tempo != 1.0) or (pitch != 1.0):
             if pitch != 1.0:
-                af.append('asetrate=%d' % (44100 * pitch))
+                af.append('asetrate=%d' % (self.asr * pitch))
             tempo = self.tempo / pitch
             if tempo != 1.0:
                 while tempo > 2.0:
@@ -138,7 +143,7 @@ class Song(object):
                     tempo *= 2.0
                 af.append('atempo=%s' % float(tempo))
             if pitch != 1.0:
-                af.append('aresample=44100')
+                af.append('aresample=%d' % self.asr)
         options = '-vn'
         if af:
             options += ' -af "%s"' % ','.join(af)
