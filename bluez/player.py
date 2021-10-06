@@ -7,6 +7,7 @@ import re
 import random
 import collections
 import time
+import datetime
 import io
 import struct
 
@@ -59,10 +60,12 @@ class Player(object):
         self.voice_client = None
         self.now_playing = None
         self.queue = collections.deque()
+        self.history = collections.deque()
         self.looping = False
         self.queue_looping = False
         self.votes = []
         self.empty_paused = False
+        self.skip_backward = False
         self.idle_task = None
         self.last_started_playing = None
         self.last_paused = None
@@ -115,6 +118,16 @@ class Player(object):
             return False
         if not self.queue:
             await self.send(target, '**:x: The queue is currently empty.** Type `%splay` to play a song' % self.prefix)
+            return False
+        return True
+
+
+    async def ensure_history(self, member, target):
+        # Make sure the bot has a history
+        if not (await self.ensure_connected(member, target)):
+            return False
+        if not self.history:
+            await self.send(target, '**:x: There are no songs in the history.** Type `%splay` to play a song' % self.prefix)
             return False
         return True
 
@@ -209,13 +222,21 @@ class Player(object):
                 errmsg = (await self.text_channel.send('**:x: Error playing `%s`: `%s`**' % (self.now_playing.name, error)))
                 self.bot_messages.append(errmsg)
             if self.seek_pos is None:
-                if self.looping and (self.now_playing is not None):
+                if self.looping and (self.now_playing is not None) and not self.skip_backward:
                     pass
-                elif self.queue:
+                elif self.queue and not self.skip_backward:
                     self.now_playing = self.queue.popleft()
                     if self.queue_looping:
                         self.queue.append(self.now_playing)
+                elif (len(self.history) > 1) and self.skip_backward:
+                    self.queue.appendleft(self.now_playing)
+                    self.history.pop()
+                    self.now_playing, timestamp = self.history.pop()
+                    self.skip_backward = False
                 else:
+                    if self.skip_backward:
+                        self.history.clear()
+                        self.skip_backward = False
                     self.now_playing = None
                     self.last_started_playing = None
                     self.last_paused = None
@@ -229,6 +250,8 @@ class Player(object):
                 self.voice_client.play(source, after=self._play_next_callback)
                 self.last_started_playing = time.time() - (self.seek_pos or 0)
                 self.last_paused = None
+                if self.seek_pos is None:
+                    self.history.append((self.now_playing, datetime.datetime.now()))
                 announce = (self.announcesongs and (self.seek_pos is None))
                 self.seek_pos = None
                 if announce:
@@ -246,14 +269,15 @@ class Player(object):
 
 
 
-    async def skip(self, target):
+    async def skip(self, target, backward=False):
         # Skip to the next song on the queue.
         # Does the same thing as play_next() if there's not
         # currently a song playing.
         if self.voice_client is not None:
+            self.skip_backward = backward
             if self.voice_client.is_playing() or self.voice_client.is_paused():
                 self.voice_client.stop()
-                await self.send(target, '***:fast_forward: Skipped :thumbsup:***')
+                await self.send(target, '***:%s: Skipped :thumbsup:***' % ('rewind' if backward else 'fast_forward'))
             else:
                 await self.play_next()
 
@@ -358,6 +382,29 @@ class Player(object):
                              icon_url=target.author.avatar_url)
             embeds.append(embed)
         await self.client.post_multipage_embed(embeds, target, start_index)
+
+
+
+    async def history_message(self, target):
+        # Post the history to the appropriate channel
+        if not (await self.ensure_history(None, target)):
+            return
+        n = len(self.history)
+        npages = (n - 1) // 10 + 1
+        embeds = []
+        color = discord.Color.random()
+        for i in range(npages):
+            embed = discord.Embed(title='History for %s' % target.guild.name, color=color)
+            description = ''
+            for song, timestamp in tuple(self.history)[-10*(i+1) : ((-10*i) or None)]:
+                description += '`%s` %s | `Requested by %s`\n\n' % (timestamp.ctime(), format_link(song), format_user(song.user))
+            embed.description = description
+            footer = 'Page %d/%d' % (npages-i, npages)
+            embed.set_footer(text=footer,
+                             icon_url=target.author.avatar_url)
+            embeds.append(embed)
+        embeds.reverse()
+        await self.client.post_multipage_embed(embeds, target, npages-1)
 
 
 
@@ -751,6 +798,21 @@ class Player(object):
         if page is None:
             page = 1
         await self.queue_message(target, page-1)
+
+
+    async def command_history(self, target):
+        '''Show the list of songs in the history'''
+        # !history
+        await self.history_message(target)
+
+
+    async def command_back(self, target):
+        '''Skip backwards and play the previous song again'''
+        # !back
+        if (await self.ensure_history(target.author, target)) and \
+           (await self.ensure_dj(target.author, target)):
+            await self.skip(target, backward=True)
+        
 
 
     async def command_loopqueue(self, target):

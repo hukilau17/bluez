@@ -9,7 +9,7 @@ import re
 from bluez.util import *
 
 
-NIGHTCORE_TEMPO = 1.4
+NIGHTCORE_TEMPO = 1.3
 NIGHTCORE_PITCH = 1.3
 SLOWED_TEMPO = 0.7
 BASS_BOOST_DB = 5
