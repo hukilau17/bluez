@@ -519,7 +519,7 @@ class Player(object):
                 description += '\n\n\n\n**Type a number to make a choice, Type `cancel` to exit**'
                 embed = discord.Embed(description=description)
                 embed.set_author(name=(target.author.nick or target.author.name), icon_url=target.author.avatar_url)
-                await self.send(target, embed=embed)
+                embed_message = (await self.send(target, embed=embed))
             else:
                 # No results
                 await self.send(target, '**:x: There were no results matching the query**')
@@ -535,6 +535,8 @@ class Player(object):
                 await self.send(target, '**:no_entry_sign: Timeout**')
                 result = None
             self.searching_channels.remove(target.channel)
+            await embed_message.delete()
+            self.bot_messages.remove(embed_message)
             if result is None:
                 return
             m = result.content.strip().lower()
@@ -654,9 +656,9 @@ class Player(object):
            (await self.ensure_dj(target.author, target)):
             self.looping = (not self.looping)
             if self.looping:
-                await self.send(target, '**:repeat: Song loop enabled**')
+                await self.send(target, '**:repeat_one: Enabled!**')
             else:
-                await self.send(target, '**:no_entry_sign: Disabled song loop**')
+                await self.send(target, '**:repeat_one: Disabled!**')
             
 
     async def command_voteskip(self, target):
@@ -728,7 +730,7 @@ class Player(object):
                 self.voice_client.resume()
                 self.last_started_playing += (time.time() - self.last_paused)
                 self.last_paused = None
-                await self.send(target, '**Resumed :pause_button:**')
+                await self.send(target, '**:play_pause: Resuming :thumbsup:**')
             else:
                 await self.send(target, '**:no_entry_sign: Already playing**')
             
@@ -756,9 +758,9 @@ class Player(object):
            (await self.ensure_dj(target.author, target)):
             self.queue_looping = (not self.queue_looping)
             if self.queue_looping:
-                await self.send(target, '**:repeat: Queue loop enabled**')
+                await self.send(target, '**:repeat: Enabled!**')
             else:
-                await self.send(target, '**:no_entry_sign: Disabled queue loop**')
+                await self.send(target, '**:repeat: Disabled!**')
 
 
     async def command_move(self, target, old=None, new=None):

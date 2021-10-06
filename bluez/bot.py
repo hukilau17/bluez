@@ -14,6 +14,8 @@ import boto3
 from bluez.player import Player
 from bluez.util import *
 
+
+
 BLUEZ_DEBUG = bool(int(os.getenv('BLUEZ_DEBUG', '0')))
 BLUEZ_INVITE_LINK = os.getenv('BLUEZ_INVITE_LINK')
 BLUEZ_SOURCE_LINK = os.getenv('BLUEZ_SOURCE_LINK', 'https://github.com/hukilau17/bluez')
@@ -695,11 +697,13 @@ for personal use. Source code is freely available online: `%s`**' % BLUEZ_SOURCE
             except IndexError:
                 song = None
         is_now_playing = False
+        artist = ''
         if not song:
             if getattr(target, 'guild', None):
                 player = self.players[target.guild.id]
                 if (await player.ensure_playing(target.author, target)):
-                    song = player.now_playing.name
+                    song = (player.now_playing.track or player.now_playing.name)
+                    artist = (player.now_playing.artist or '')
                     is_now_playing = True
                 else:
                     return
@@ -708,9 +712,12 @@ for personal use. Source code is freely available online: `%s`**' % BLUEZ_SOURCE
                 await self.send(target, '**:x: I am not currently playing anything.**')
                 return
         song_name = song
-        await self.send(target, '**:mag: Searching lyrics for `%s`**' % song_name)
-        song = self.genius.search_song(song_name)
-        if is_now_playing and not song:
+        if artist:
+            await self.send(target, '**:mag: Searching lyrics for `%s` by `%s`**' % (song_name, artist))
+        else:
+            await self.send(target, '**:mag: Searching lyrics for `%s`**' % song_name)
+        song = self.genius.search_song(song_name, artist)
+        if is_now_playing and (not song) and (not artist):
             # Sometimes song titles on YouTube videos contain too much information (e.g. "Official Audio/Video")
             # that makes Genius fail to return a meaningful result. This is a really cheap attempt to lower the probability
             # of that happening.

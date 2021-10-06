@@ -8,6 +8,7 @@ import re
 
 from bluez.util import *
 
+
 NIGHTCORE_TEMPO = 1.4
 NIGHTCORE_PITCH = 1.3
 SLOWED_TEMPO = 0.7
@@ -44,6 +45,8 @@ ydl = youtube_dl.YoutubeDL({
     'source_address': '0.0.0.0'
 })
 
+ydl.cache.remove()
+
 
 
 
@@ -70,7 +73,7 @@ class Song(object):
         self.channel = self.data.get('channel', 'None')
         self.artist = self.data.get('artist')
         self.track = self.data.get('track')
-        self.asr = self.data.get('asr', 44100)
+        self.asr = self.data.get('asr')
         if 'extra_info_hack' in self.data:
             self.url = None
             self.link = None
@@ -131,8 +134,12 @@ class Song(object):
         # tempo/pitch is first adjusted by varying the sampling rate,
         # then tempo can be additionally altered by using the atempo filter
         if (self.tempo != 1.0) or (pitch != 1.0):
+            asr = self.asr
             if pitch != 1.0:
-                af.append('asetrate=%d' % (self.asr * pitch))
+                if asr is None:
+                    asr = 44100
+                    af.append('aresample=44100')
+                af.append('asetrate=%d' % (asr * pitch))
             tempo = self.tempo / pitch
             if tempo != 1.0:
                 while tempo > 2.0:
@@ -143,7 +150,7 @@ class Song(object):
                     tempo *= 2.0
                 af.append('atempo=%s' % float(tempo))
             if pitch != 1.0:
-                af.append('aresample=%d' % self.asr)
+                af.append('aresample=%d' % asr)
         options = '-vn'
         if af:
             options += ' -af "%s"' % ','.join(af)
