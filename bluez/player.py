@@ -1190,8 +1190,8 @@ class Player(object):
             await self.send(target, embed=embed)
         elif command == 'clear':
             # Reset all effects to default
-            if (await self.self.ensure_connected(target.author, target)) and \
-               (await self.self.ensure_dj(target.author, target)):
+            if (await self.ensure_connected(target.author, target)) and \
+               (await self.ensure_dj(target.author, target)):
                 await self.send(target, '**:warning: You are about to reset all audio effects to their defaults. Continue? (yes/no)**')
                 def check(m):
                     return (m.channel == target.channel) and (m.author == target.author) and m.content.lower().strip() in ('yes', 'no')
