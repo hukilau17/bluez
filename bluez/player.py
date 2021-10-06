@@ -702,7 +702,9 @@ class Player(object):
                 position = 1
             for n in range(position-1):
                 if self.queue:
-                    self.queue.popleft()
+                    song = self.queue.popleft()
+                    if self.queue_looping:
+                        self.queue.append(song)
                 else:
                     break
             await self.skip(target)
@@ -811,7 +813,9 @@ class Player(object):
                 await self.send(target, '**:x: Invalid position, should be between 1 and %d**' % len(self.queue))
             else:
                 for n in range(position-1):
-                    self.queue.popleft()
+                    song = self.queue.popleft()
+                    if self.queue_looping:
+                        self.queue.append(song)
                 await self.skip(target)
 
 
