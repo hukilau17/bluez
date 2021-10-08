@@ -76,7 +76,6 @@ class Song(object):
         self.asr = self.data.get('asr')
         if 'extra_info_hack' in self.data:
             self.url = None
-            self.link = None
             if self.data.get('ie_key') == 'Youtube':
                 self.link = 'https://www.youtube.com/watch?v=%s' % self.data['id']
             else:

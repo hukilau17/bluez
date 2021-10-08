@@ -7,6 +7,7 @@ import re
 import random
 import collections
 import time
+import math
 import datetime
 import io
 import struct
@@ -251,7 +252,7 @@ class Player(object):
                 self.last_started_playing = time.time() - (self.seek_pos or 0)
                 self.last_paused = None
                 if self.seek_pos is None:
-                    self.history.append((self.now_playing, datetime.datetime.now()))
+                    self.history.append((self.now_playing, self.get_local_time()))
                 announce = (self.announcesongs and (self.seek_pos is None))
                 self.seek_pos = None
                 if announce:
@@ -397,7 +398,7 @@ class Player(object):
             embed = discord.Embed(title='History for %s' % target.guild.name, color=color)
             description = ''
             for song, timestamp in tuple(self.history)[-10*(i+1) : ((-10*i) or None)]:
-                description += '`%s` %s | `Requested by %s`\n\n' % (timestamp.ctime(), format_link(song), format_user(song.user))
+                description += '`%s` %s | `Requested by %s`\n\n' % (timestamp.strftime('%x %X'), format_link(song), format_user(song.user))
             embed.description = description
             footer = 'Page %d/%d' % (npages-i, npages)
             embed.set_footer(text=footer,
@@ -890,7 +891,7 @@ class Player(object):
             await self.send(target, '**:twisted_rightwards_arrows: Shuffled queue :ok_hand:**')
 
 
-    async def command_remove(self, target, number=None):
+    async def command_remove(self, target, position=None, start=None, end=None):
         '''Remove a certain entry from the queue'''
         # !remove
         if (await self.ensure_queue(target.author, target)) and \
@@ -912,8 +913,10 @@ class Player(object):
                         else:
                             await self.usage_embed('%sremove [positions]' % self.prefix, target)
                             return
-            else:
-                numbers = [number]
+            elif target.subcommand_name == 'song':
+                numbers = [position]
+            else: # range subcommand
+                numbers = range(start, len(self.queue) if end is None else end+1)
             for number in numbers:
                 if not (1 <= number <= len(self.queue)):
                     await self.send(target, '**:x: Invalid position, should be between 1 and %d**' % len(self.queue))
@@ -1039,8 +1042,9 @@ class Player(object):
                     await self.send(target, '**:musical_note: No AutoPlay playlist currently configured**')
                 return
             elif setting == 'announcesongs':
-                await self.send(target, '**:bell: Announcing new songs is currently turned %s**' % \
-                                ('on' if self.announcesongs else 'off'))
+                await self.send(target, '**:%s: Announcing new songs is currently turned %s**' % \
+                                ('bell' if self.announcesongs else 'no_bell',
+                                 'on' if self.announcesongs else 'off'))
                 return
             elif setting == 'maxqueuelength':
                 if self.maxqueuelength is None:
@@ -1111,9 +1115,9 @@ class Player(object):
                     unblacklist.append(channel)
             self.blacklist.extend(blacklist)
             if blacklist:
-                await self.send(target, 'Blacklisted `%s`' % ', '.join([channel.name for channel in blacklist]))
+                await self.send(target, '**Blacklisted `%s`**' % ', '.join([channel.name for channel in blacklist]))
             if unblacklist:
-                await self.send(target, 'Unblacklisted `%s`' % ', '.join([channel.name for channel in unblacklist]))
+                await self.send(target, '**Unblacklisted `%s`**' % ', '.join([channel.name for channel in unblacklist]))
         elif setting == 'autoplay':
             if value == 'disable':
                 self.autoplay = None
@@ -1129,9 +1133,9 @@ class Player(object):
         elif setting == 'announcesongs':
             self.announcesongs = value
             if value:
-                await self.send(target, '**:white_check_mark: I will now announce new songs**')
+                await self.send(target, '**:bell: I will now announce new songs**')
             else:
-                await self.send(target, '**:no_entry_sign: I will not announce new songs**')
+                await self.send(target, '**:no_bell: I will not announce new songs**')
         elif setting == 'maxqueuelength':
             if value in ('disable', 0):
                 value = None
@@ -1230,9 +1234,9 @@ class Player(object):
             if (await self.ensure_connected(target.author, target)):
                 embed = discord.Embed(title='Current audio effect settings',
                                       description='''\
-:man_running: Speed - %s
+:man_running: Speed - %.3g
 
-:musical_score: Pitch - %s
+:musical_score: Pitch - %.3g (%+.3g semitones)
 
 :guitar: Bass - %d
 
@@ -1240,7 +1244,8 @@ class Player(object):
 
 :stopwatch: Slowed - %s
 
-:loud_sound: Volume - %d''' % (self.tempo, self.pitch, self.bass, 'On' if self.nightcore else 'Off',
+:loud_sound: Volume - %d''' % (self.tempo, self.pitch, 12*math.log2(self.pitch),
+                               self.bass, 'On' if self.nightcore else 'Off',
                   'On' if self.slowed else 'Off', round(200 * self.volume)))
                 await self.send(target, embed=embed)
         elif command == 'help':
@@ -1284,25 +1289,46 @@ class Player(object):
         if (await self.ensure_connected(target.author, target)):
             speed = (await self.parse_value(target, speed, 0.1, 3, integer=False))
             if speed is None:
-                await self.send(target, '**:man_running: Current playback speed is set to %s**' % self.tempo)
+                await self.send(target, '**:man_running: Current playback speed is set to %.3g**' % self.tempo)
             elif (await self.ensure_dj(target.author, target)):
                 self.tempo = speed
                 self.update_audio()
-                await self.send(target, '**:white_check_mark: Playback speed set to %s**' % self.tempo)
+                await self.send(target, '**:white_check_mark: Playback speed set to %.3g**' % self.tempo)
 
 
 
-    async def command_pitch(self, target, pitch=None):
+    async def command_pitch(self, target, scale=None, steps=None):
         '''Show or adjust the playback pitch'''
         # !pitch
         if (await self.ensure_connected(target.author, target)):
-            pitch = (await self.parse_value(target, pitch, 0.1, 3, integer=False))
-            if pitch is None:
-                await self.send(target, '**:musical_score: Current playback pitch is set to %s**' % self.pitch)
+            if isinstance(target, discord.Message):
+                try:
+                    semitones = target.content[len(self.prefix):].split()[1].startswith(('+', '-'))
+                except IndexError:
+                    semitones = False
+            else:
+                semitones = (target.subcommand_name == 'steps')
+            if semitones:
+                shift = (await self.parse_value(target, steps, -40, 20, integer=False))
+                if shift is None:
+                    scale = None
+                else:
+                    scale = 2.0 ** (shift/12.0)
+                    scale = max(min(scale, 3), .1)
+            else:
+                scale = (await self.parse_value(target, scale, 0.1, 3, integer=False))
+            if scale is None:
+                if semitones:
+                    await self.send(target, '**:musical_score: Current playback pitch is shifted by %.3g semitones**' % (12*math.log2(self.pitch)))
+                else:
+                    await self.send(target, '**:musical_score: Current playback frequency multiplier is set to %.3g**' % self.pitch)
             elif (await self.ensure_dj(target.author, target)):
-                self.pitch = pitch
+                self.pitch = scale
                 self.update_audio()
-                await self.send(target, '**:white_check_mark: Playback pitch set to %s**' % self.pitch)
+                if semitones:
+                    await self.send(target, '**:white_check_mark: Playback pitch shifted by %.3g semitones**' % shift)
+                else:
+                    await self.send(target, '**:white_check_mark: Playback frequency multiplier set to %.3g**' % self.pitch)
 
 
 
@@ -1561,6 +1587,86 @@ class Player(object):
                 return target.content[len(self.prefix):].split(None, 1)[1]
             except IndexError:
                 pass
+
+
+
+
+    def get_local_time(self):
+        now = datetime.datetime.utcnow()
+        # Find the region we are in
+        region = str(self.guild.region)
+        if region.startswith('vip-'):
+            region = region[4:]
+        # Compute the offset, in hours from UTC based on the guild region
+        if   region == 'us-west':
+            offset = -8   # PST
+        elif region in ('us-central', 'us-south'):
+            offset = -6   # CST
+        elif region == 'us-east':
+            offset = -5   # EST
+        elif region == 'brazil':
+            offset = -3   # BRT
+        elif region in ('eu-west', 'london'):
+            offset =  0   # GMT/UTC
+        elif region in ('amsterdam', 'eu-central', 'europe', 'frankfurt'):
+            offset = +1   # CET
+        elif region == 'southafrica':
+            offset = +2   # SAST
+        elif region == 'russia':
+            offset = +3   # MSK
+        elif region == 'dubai':
+            offset = +4   # UAE
+        elif region == 'india':
+            offset = +5.5 # IST
+        elif region in ('hongkong', 'singapore'):
+            offset = +8   # HKT/SST
+        elif region in ('japan', 'southkorea'):
+            offset = +9   # JST/KST
+        elif region == 'sydney':
+            offset = +10  # AEST
+        else:
+            return now    # just return UTC as is (default)
+        # Figure out if this needs to be adjusted for daylight saving time
+        if offset in (0, +1):
+            # European time zones observe DST from the last Sunday of March (at 01:00 UTC)
+            # to the last Sunday of October (at 01:00 UTC)
+            last_day_of_march = datetime.datetime(now.year, 3, 31, 1)
+            dst_start = last_day_of_march - datetime.timedelta((last_day_of_march.weekday()+1) % 7)
+            last_day_of_october = datetime.datetime(now.year, 10, 31, 1)
+            dst_end = last_day_of_october - datetime.timedelta((last_day_of_october.weekday()+1) % 7)
+            dst = (dst_start <= now < dst_end)
+        elif -8 <= offset <= -5:
+            # US time zones observe DST from the second Sunday of March (at 02:00 local time)
+            # to the first Sunday of November (at 02:00 local time)
+            first_day_of_march = datetime.datetime(now.year, 3, 1, 2) - datetime.timedelta(offset)
+            dst_start = first_day_of_march + datetime.timedelta(7 + ((-(first_day_of_march.weekday()+1)) % 7))
+            first_day_of_november = datetime.datetime(now.year, 11, 1, 2) - datetime.timedelta(offset)
+            dst_end = first_day_of_november + datetime.timedelta((-(first_day_of_november.weekday()+1)) % 7)
+            dst = (dst_start <= now <= dst_end)
+        elif offset == +10:
+            # Australian time zones observe DST from the first Sunday of October (at 02:00 local time)
+            # to the first Sunday of April (at 2:00 local time)
+            if now.month >= 10:
+                first_day_of_october = datetime.datetime(now.year, 10, 1, 2) - datetime.timedelta(offset)
+                dst_start = first_day_of_october + datetime.timedelta((-(first_day_of_october.weekday()+1)) % 7)
+                dst = (now >= dst_start)
+            elif now.month <= 4:
+                first_day_of_april = datetime.datetime(now.year, 4, 1, 2) - datetime.timedelta(offset)
+                dst_end = first_day_of_april + datetime.timedelta((-(first_day_of_april.weekday()+1)) % 7)
+                dst = (now < dst_end)
+            else:
+                dst = False
+        else:
+            # The more civilized countries do not observe DST
+            dst = False
+        if dst:
+            offset += 1
+        # Return the adjusted datetime
+        return now + datetime.timedelta(hours=offset)
+        
+            
+
+
 
 
 

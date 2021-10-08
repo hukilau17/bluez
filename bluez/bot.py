@@ -214,6 +214,8 @@ class Bot(discord.Client):
                 player.bot_messages.append(reply)
         if not message.content.startswith(prefix):
             return # This is not a bot command
+        if message.content == prefix:
+            return # No actual command, just a prefix
         # Figure out which command it is and invoke it
         command = message.content[len(prefix):].split(None, 1)[0].lower()
         command = self.aliases.get(command, command)
@@ -433,10 +435,25 @@ class Bot(discord.Client):
                           'description': 'the position of the song to skip to',
                           'type': discord_slash.SlashCommandOptionType.INTEGER,
                           'required': True}],
-        'remove':       [{'name': 'number',
-                          'description': 'the position of the song to remove from the queue',
-                          'type': discord_slash.SlashCommandOptionType.INTEGER,
-                          'required': True}],
+        'remove':       [{'name': 'song',
+                          'description': 'Remove a single song from the queue',
+                          'type': discord_slash.SlashCommandOptionType.SUB_COMMAND,
+                          'options': [{
+                              'name': 'position',
+                              'description': 'the position of the song to remove from the queue',
+                              'type': discord_slash.SlashCommandOptionType.INTEGER,
+                              'required': True}]},
+                         {'name': 'range',
+                          'description': 'Remove a range of songs from the queue',
+                          'type': discord_slash.SlashCommandOptionType.SUB_COMMAND,
+                          'options': [{'name': 'start',
+                                       'description': 'the position of the first song to remove from the queue',
+                                       'type': discord_slash.SlashCommandOptionType.INTEGER,
+                                       'required': True},
+                                      {'name': 'end',
+                                       'description': 'the position of the last song to remove from the queue',
+                                       'type': discord_slash.SlashCommandOptionType.INTEGER,
+                                       'required': False}]}],
         'clear':        [{'name': 'user',
                           'description': 'clear only songs queued by this user',
                           'type': discord_slash.SlashCommandOptionType.USER,
@@ -449,10 +466,22 @@ class Bot(discord.Client):
                           'description': 'the playback speed',
                           'type': discord_slash.SlashCommandOptionType.FLOAT,
                           'required': False}],
-        'pitch':        [{'name': 'pitch',
-                          'description': 'the playback pitch',
-                          'type': discord_slash.SlashCommandOptionType.FLOAT,
-                          'required': False}],
+        'pitch':        [{'name': 'scale',
+                          'description': 'Scale the playback pitch up or down',
+                          'type': discord_slash.SlashCommandOptionType.SUB_COMMAND,
+                          'options': [{
+                              'name': 'scale',
+                              'description': 'the factor to multiply the playback frequency by',
+                              'type': discord_slash.SlashCommandOptionType.FLOAT,
+                              'required': False}]},
+                         {'name': 'steps',
+                          'description': 'Shift the playback pitch up or down by semitones',
+                          'type': discord_slash.SlashCommandOptionType.SUB_COMMAND,
+                          'options': [{
+                              'name': 'steps',
+                              'description': 'the number of semitones to shift the playback frequency by',
+                              'type': discord_slash.SlashCommandOptionType.FLOAT,
+                              'required': False}]}],
         'bass':         [{'name': 'bass',
                           'description': 'the bass intensity',
                           'type': discord_slash.SlashCommandOptionType.INTEGER,
@@ -593,7 +622,7 @@ class Bot(discord.Client):
         }
 
 
-    commands_with_subcommands = ('effects', 'settings')
+    commands_with_subcommands = ('effects', 'settings', 'remove', 'pitch')
 
 
 
@@ -663,7 +692,7 @@ class Bot(discord.Client):
     async def command_ping(self, target):
         '''Check the bot's response time to Discord'''
         # !ping
-        await self.send(target, '**Howdy.** Ping time is %d ms' % (self.latency * 1000))
+        await self.send(target, '**Howdy.** Ping time is %d ms :heartbeat:' % (self.latency * 1000))
 
 
     async def command_info(self, target):
