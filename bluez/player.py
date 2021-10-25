@@ -232,7 +232,7 @@ class Player(object):
                         self.seek_pos = None
                         retrying = True
                         await self.now_playing.reload()
-                    else:
+                    elif not self.should_ignore(error):
                         errmsg = (await self.text_channel.send('**:x: Error playing `%s`: `%s`**' % (self.now_playing.name, error)))
                         self.bot_messages.append(errmsg)
             # Figure out what song to play next
@@ -267,9 +267,9 @@ class Player(object):
                 self.voice_client.play(source, after=self._play_next_callback)
                 self.last_started_playing = time.time() - (self.seek_pos or 0)
                 self.last_paused = None
-                if self.seek_pos is None:
+                if (self.seek_pos is None) and not retrying:
                     self.history.append((self.now_playing, self.get_local_time()))
-                announce = (self.announcesongs and (self.seek_pos is None))
+                announce = (self.announcesongs and (self.seek_pos is None) and not retrying):
                 self.seek_pos = None
                 if announce:
                     await self.np_message(self.text_channel)
@@ -341,6 +341,11 @@ class Player(object):
     def should_retry(self, errmsg):
         # Determine from the text of an error message if we should reload the song and try again
         return 'Server returned 403 Forbidden (access denied)' in errmsg # try again for this stupid bug
+
+
+    def should_ignore(self, errmsg):
+        # Determine from the text of an error message if we should ignore it without printing anything out
+        return 'Connection reset by peer' in errmsg # these aren't worth printing out
 
 
     async def np_message(self, target):
