@@ -10,6 +10,7 @@ import time
 import math
 import datetime
 import io
+import tempfile
 import struct
 
 from bluez.song import *
@@ -73,6 +74,7 @@ class Player(object):
         self.bot_messages = []
         self.searching_channels = []
         self.seek_pos = None
+        self.stderr = tempfile.TemporaryFile()
         self.reset_effects()
 
 
@@ -144,7 +146,7 @@ class Player(object):
             return True
         if self.voice_channel is None:
             await self.send(target, '**:x: You have to be in a voice channel to use this command.**')
-        elif len(self.voice_channel.members) == 1:
+        elif member.voice and member.voice.channel and (len(self.voice_channel.members) == 1):
             # if the bot is by itself, you can steal it
             await self.disconnect()
             await self.connect(target, member.voice.channel)
@@ -214,15 +216,27 @@ class Player(object):
                 await self.send(target, '**:mailbox_with_no_mail: Successfully disconnected**')
 
 
+
     async def play_next(self, error=None):
         # Play the next song from the queue, if it exists
         # Should only be called when nothing is currently playing
         self.votes = []
         if self.voice_client is not None:
-            if self.now_playing and error:
-                errmsg = (await self.text_channel.send('**:x: Error playing `%s`: `%s`**' % (self.now_playing.name, error)))
-                self.bot_messages.append(errmsg)
-            if self.seek_pos is None:
+            # Check for an error with the previous song
+            retrying = False
+            if self.now_playing:
+                error = (error or get_error(self.stderr))
+                if error:
+                    error = str(error)
+                    if self.should_retry(error):
+                        self.seek_pos = None
+                        retrying = True
+                        await self.now_playing.reload()
+                    else:
+                        errmsg = (await self.text_channel.send('**:x: Error playing `%s`: `%s`**' % (self.now_playing.name, error)))
+                        self.bot_messages.append(errmsg)
+            # Figure out what song to play next
+            if (self.seek_pos is None) and not retrying:
                 if self.looping and (self.now_playing is not None) and not self.skip_backward:
                     pass
                 elif self.queue and not self.skip_backward:
@@ -242,10 +256,12 @@ class Player(object):
                     self.last_started_playing = None
                     self.last_paused = None
                     return
+            # Fetch the audio for the song and play it
             if self.now_playing:
-                source = self.now_playing.get_audio(self.seek_pos or 0, self.tempo, self.pitch, self.bass,
-                                                    self.nightcore, self.slowed, self.volume)
+                source = (await self.now_playing.get_audio(self.seek_pos or 0, self.tempo, self.pitch, self.bass,
+                                                           self.nightcore, self.slowed, self.volume, self.stderr))
                 if isinstance(source, Exception):
+                    self.seek_pos = None
                     await self.play_next(source)
                     return
                 self.voice_client.play(source, after=self._play_next_callback)
@@ -304,7 +320,7 @@ class Player(object):
         # Effectively the same as a "seek" to the current time
         if (self.voice_client is not None) and (self.voice_client.is_playing() or self.voice_client.is_paused()):
             self.seek_pos = self.get_current_time()
-            self.seek_pos *= self.now_playing.tempo / self.now_playing.get_adjusted_tempo(self.tempo, self.nightcore, self.slowed)
+            self.seek_pos *= self.now_playing.tempo / self.get_adjusted_tempo()
             self.voice_client.stop()
 
 
@@ -314,6 +330,17 @@ class Player(object):
             return self.last_paused - self.last_started_playing
         elif self.last_started_playing is not None:
             return time.time() - self.last_started_playing
+
+
+    def get_adjusted_tempo(self):
+        # Get the tempo that songs are currently playing it
+        # (this is different from self.tempo if nightcore or slowed options are enabled)
+        return get_adjusted_tempo(self.tempo, self.nightcore, self.slowed)
+
+
+    def should_retry(self, errmsg):
+        # Determine from the text of an error message if we should reload the song and try again
+        return 'Server returned 403 Forbidden (access denied)' in errmsg # try again for this stupid bug
 
 
     async def np_message(self, target):
@@ -338,13 +365,7 @@ class Player(object):
                                   time_message + '\n\n' + \
                                   '`Requested by:` ' + format_user(song.user),
                                   color=discord.Color.blue())
-            if hasattr(target, 'author'):
-                icon_url = target.author.avatar_url
-            elif hasattr(target, 'avatar_url'):
-                icon_url = target.avatar_url
-            else:
-                icon_url = self.client.user.avatar_url
-            embed.set_author(name='Now Playing \u266a', icon_url=icon_url)
+            embed.set_author(name='Now Playing \u266a', icon_url=self.client.user.avatar_url)
             if song.thumbnail:
                 embed.set_thumbnail(url=song.thumbnail)
             await self.send(target, embed=embed)
@@ -357,7 +378,7 @@ class Player(object):
             return
         n = len(self.queue)
         npages = (n - 1) // 10 + 1
-        total = format_time(sum([i.length for i in self.queue]))
+        total = format_time(sum([i.length for i in self.queue]) / self.get_adjusted_tempo())
         embeds = []
         color = discord.Color.random()
         for i in range(npages):
@@ -371,7 +392,7 @@ class Player(object):
                 description += '__Up Next:__\n'
             for j, song in enumerate(tuple(self.queue)[10*i : 10*(i+1)], 10*i+1):
                 description += '`%d.` %s | `%s Requested by %s`\n\n' % \
-                               (j, format_link(song), format_time(song.length),
+                               (j, format_link(song), format_time(song.length / self.get_adjusted_tempo()),
                                 format_user(song.user))
             description += '**%d songs in queue | %s total length**\n\n' % (n, total)
             embed.description = description
@@ -415,7 +436,7 @@ class Player(object):
             if now:
                 time = position = 'Now'
             else:
-                time = sum([i.length for i in tuple(self.queue)[:position]])
+                time = sum([i.length for i in tuple(self.queue)[:position]]) / self.get_adjusted_tempo()
                 if self.now_playing is not None:
                     time += max(self.now_playing.adjusted_length - self.get_current_time(), 0)
                 if time == 0:
@@ -438,7 +459,7 @@ class Player(object):
                 embed = discord.Embed(description=format_link(songs[0]))
                 embed.set_author(name='Added to queue', icon_url=target.author.avatar_url)
                 embed.add_field(name='Channel', value=songs[0].channel, inline=True)
-                embed.add_field(name='Song Duration', value=format_time(songs[0].length), inline=True)
+                embed.add_field(name='Song Duration', value=format_time(songs[0].length / self.get_adjusted_tempo()), inline=True)
                 embed.add_field(name='Estimated time until playing', value=time, inline=True)
                 embed.add_field(name='Position in queue', value=position, inline=False)
                 if songs[0].thumbnail:
@@ -563,7 +584,9 @@ class Player(object):
             songs = (await songs_from_search(query, target.author, 10))
             if songs:
                 # Print out an embed of the songs
-                description = '\n\n'.join(['`%d.` %s **[%s]**' % (i+1, format_link(song), format_time(song.length)) for i, song in enumerate(songs)])
+                description = '\n\n'.join(['`%d.` %s **[%s]**' % (i+1, format_link(song),
+                                                                  format_time(song.length / self.get_adjusted_tempo())) \
+                                           for i, song in enumerate(songs)])
                 description += '\n\n\n\n**Type a number to make a choice, Type `cancel` to exit**'
                 embed = discord.Embed(description=description)
                 embed.set_author(name=(target.author.nick or target.author.name), icon_url=target.author.avatar_url)
@@ -802,7 +825,7 @@ class Player(object):
 
 
     async def command_history(self, target):
-        '''Show the list of songs in the history'''
+        '''Show the list of recently played songs'''
         # !history
         await self.history_message(target)
 

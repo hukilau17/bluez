@@ -2,9 +2,12 @@
 
 import discord
 import youtube_dl
+import tinytag
+import httpio
 import asyncio
-import os
 import re
+import os
+import logging
 
 from bluez.util import *
 
@@ -14,6 +17,7 @@ NIGHTCORE_PITCH = 1.3
 SLOWED_TEMPO = 0.7
 BASS_BOOST_DB = 5
 TREBLE_ATTENUATE_DB = 2
+METADATA_TIMEOUT = 30
 
 
 PLAYLIST_HACK = True # implement at your own risk
@@ -41,11 +45,10 @@ ydl = youtube_dl.YoutubeDL({
     'logtostderr': False,
     'quiet': (not int(os.getenv('BLUEZ_DEBUG', '0'))),
     'no_warnings': True,
+    'cachedir': False,
     'default_search': 'auto',
     'source_address': '0.0.0.0'
 })
-
-ydl.cache.remove()
 
 
 
@@ -98,23 +101,84 @@ class Song(object):
             except Exception as e:
                 self.error = e
             self.init()
+        # Get metadata if we need to
+        self.fetch_metadata()
 
 
-    def get_adjusted_tempo(self, tempo=1.0, nightcore=False, slowed=False):
-        # given the tempo and the nightcore/slowed options, adjusts the tempo and makes
-        # sure it is within the allowed range
-        tempo *= (NIGHTCORE_TEMPO if nightcore else 1.0) * (SLOWED_TEMPO if slowed else 1.0)
-        return min(max(tempo, 0.1), 3)
 
 
-    def get_audio(self, seek_pos=0, tempo=1.0, pitch=1.0, bass=1, nightcore=False, slowed=False, volume=1.0):
+    async def get_metadata(self):
+        # try to get information from the metadata of a song
+        try:
+            with httpio.open(self.url) as fp:
+                parser_class = tinytag.TinyTag.get_parser_class(fp.url, fp)
+                tag = parser_class(fp, fp.length)
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, lambda: tag.load(tags=True, duration=True))
+        except Exception as error:
+            logging.warning('unable to get metadata for "%s": %s' % (self.name, error))
+            return
+        # If successful, set information from this tag object
+        if not self.length:
+            self.length = float(tag.duration)
+            self.adjusted_length = self.length / self.tempo
+        if self.artist is None:
+            self.artist = tag.artist
+        if self.track is None:
+            self.track = tag.title
+        if (self.name == '[no title]') and self.track:
+            if self.artist:
+                self.name = '%s - %s' % (self.artist, self.track)
+            else:
+                self.name = self.track
+
+
+    async def get_metadata_with_timeout(self, timeout):
+        # try to get the metadata, but don't wait forever
+        try:
+            await asyncio.wait_for(self.get_metadata(), timeout)
+        except asyncio.TimeoutError:
+            logging.warning('timed out while getting metadata for "%s"' % self.name)
+
+
+    def fetch_metadata(self):
+        # Begin loading the metadata asynchronously
+        if not (self.length or hasattr(self, 'metadata_task')):
+            self.metadata_task = asyncio.create_task(self.get_metadata_with_timeout(METADATA_TIMEOUT))
+        
+        
+        
+
+    async def reload(self):
+        # Reload this song and get a fresh link to it
+        # this should only be called if something goes wrong
+        logging.warning('Attempting to reload "%s"' % self.name)
+        songs = (await songs_from_url(self.link, self.user))
+        if songs:
+            self.__dict__.update(songs[0].__dict__)
+
+
+
+    def get_source(self, before_options='', options='', stderr=None, volume=1.0):
+        try:
+            source = discord.FFmpegPCMAudio(self.url, before_options=before_options, options=options, stderr=stderr)
+            # Adjust the volume if possible
+            if volume != 1.0:
+                source = discord.PCMVolumeTransformer(source, volume)
+            return source
+        except Exception as e:
+            return e
+    
+
+
+    async def get_audio(self, seek_pos=0, tempo=1.0, pitch=1.0, bass=1, nightcore=False, slowed=False, volume=1.0, stderr=None):
         # given start position and audio effect parameters, returns
         # an audio source object that can be played using a voice client
         self.process()
         if self.error:
             return self.error
         before_options = '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
-        self.tempo = self.get_adjusted_tempo(tempo, nightcore, slowed)
+        self.tempo = get_adjusted_tempo(tempo, nightcore, slowed)
         if nightcore:
             # nightcore adjusts the pitch upward
             pitch *= NIGHTCORE_PITCH
@@ -153,9 +217,13 @@ class Song(object):
         options = '-vn'
         if af:
             options += ' -af "%s"' % ','.join(af)
-        source = discord.FFmpegPCMAudio(self.url, before_options=before_options, options=options)
-        if volume != 1.0:
-            source = discord.PCMVolumeTransformer(source, volume)
+        loop = asyncio.get_event_loop()
+        source = (await loop.run_in_executor(None, lambda: self.get_source(before_options, options, stderr, volume)))
+        # Check for an error written to the stream
+        error = get_error(stderr)
+        if error:
+            return Exception(error)
+        # Otherwise return the source
         return source
         
 
@@ -169,6 +237,27 @@ class Playlist(list):
 
 
 
+
+def get_adjusted_tempo(tempo=1.0, nightcore=False, slowed=False):
+    # given the tempo and the nightcore/slowed options, adjusts the tempo and makes
+    # sure it is within the allowed range
+    tempo *= (NIGHTCORE_TEMPO if nightcore else 1.0) * (SLOWED_TEMPO if slowed else 1.0)
+    return min(max(tempo, 0.1), 3)
+
+
+
+def get_error(stderr):
+    # check if an error message has been written to the stream
+    if stderr is not None:
+        stderr.flush()
+        if stderr.tell() != 0:
+            stderr.seek(0)
+        error = stderr.read()
+        if error:
+            stderr.seek(0)
+            stderr.truncate()
+            return error.decode('latin-1')
+        
 
 
 
