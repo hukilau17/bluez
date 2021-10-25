@@ -269,7 +269,7 @@ class Player(object):
                 self.last_paused = None
                 if (self.seek_pos is None) and not retrying:
                     self.history.append((self.now_playing, self.get_local_time()))
-                announce = (self.announcesongs and (self.seek_pos is None) and not retrying):
+                announce = (self.announcesongs and (self.seek_pos is None) and not retrying)
                 self.seek_pos = None
                 if announce:
                     await self.np_message(self.text_channel)
