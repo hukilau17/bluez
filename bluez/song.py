@@ -19,6 +19,8 @@ BASS_BOOST_DB = 5
 TREBLE_ATTENUATE_DB = 2
 METADATA_TIMEOUT = 30
 
+BLUEZ_DEBUG = bool(int(os.getenv('BLUEZ_DEBUG', '0')))
+
 
 PLAYLIST_HACK = True # implement at your own risk
 
@@ -43,7 +45,8 @@ ydl = youtube_dl.YoutubeDL({
     'nocheckcertificate': True,
     'ignoreerrors': False,
     'logtostderr': False,
-    'quiet': (not int(os.getenv('BLUEZ_DEBUG', '0'))),
+    'verbose': BLUEZ_DEBUG,
+    'quiet': not BLUEZ_DEBUG,
     'no_warnings': True,
     'cachedir': False,
     'default_search': 'auto',
