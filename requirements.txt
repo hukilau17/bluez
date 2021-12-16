@@ -1,6 +1,6 @@
 discord.py>=1.7.3
 gunicorn
-youtube_dl
+git+https://github.com/Lukieer/youtube-dl
 ffmpeg
 pynacl
 lyricsgenius
