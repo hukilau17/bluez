@@ -6,12 +6,11 @@ import asyncio
 import re
 import random
 import collections
-import time
 import math
+import time
 import datetime
-import io
+import logging
 import tempfile
-import struct
 
 from bluez.song import *
 from bluez.util import *
@@ -232,7 +231,9 @@ class Player(object):
                         self.seek_pos = None
                         retrying = True
                         await self.now_playing.reload()
-                    elif not self.should_ignore(error):
+                    elif self.should_ignore(error):
+                        logging.warning(error)
+                    else:
                         errmsg = (await self.text_channel.send('**:x: Error playing `%s`: `%s`**' % (self.now_playing.name, error)))
                         self.bot_messages.append(errmsg)
             # Figure out what song to play next
@@ -345,7 +346,11 @@ class Player(object):
 
     def should_ignore(self, errmsg):
         # Determine from the text of an error message if we should ignore it without printing anything out
-        return 'Connection reset by peer' in errmsg # these aren't worth printing out
+        if 'Connection reset by peer' in errmsg:
+            return True # these are not worth complaining about
+        if 'Estimating duration from bitrate' in errmsg:
+            return True # this is a warning, not an error
+        return False
 
 
     async def np_message(self, target):
@@ -1116,7 +1121,7 @@ class Player(object):
         # Need permission to change a setting
         if not (target.author.guild_permissions.manage_channels or \
                 target.author.guild_permissions.administrator):
-            await self.send(target, '**:x: You need either `Manage Channels` or `Administrator` privileges to change the bot settings')
+            await self.send(target, '**:x: You need either `Manage Channels` or `Administrator` privileges to change the bot settings**')
             return
         if isinstance(target, discord.Message):
             if setting in ('announcesongs', 'preventduplicates', 'djplaylists', 'djonly', 'alwaysplaying'):
@@ -1700,87 +1705,97 @@ class Player(object):
 
 
     def load_settings(self):
-        # Load the bot settings from S3
-        if self.client.s3:
-            file = io.BytesIO()
-            try:
-                self.client.s3.download_fileobj(self.client.s3_bucket, 'Guild%d' % self.guild.id, file)
-            except:
-                return
-            file.seek(0)
-            # Reading boolean values
-            packed_int = file.read(1)[0]
-            self.announcesongs     = bool(packed_int & 0x01)
-            self.preventduplicates = bool(packed_int & 0x02)
-            self.djonly            = bool(packed_int & 0x04)
-            self.djplaylists       = bool(packed_int & 0x08)
-            self.alwaysplaying     = bool(packed_int & 0x10)
-            # Reading integers
-            size = struct.calcsize('HHB')
-            self.maxqueuelength, self.maxusersongs, self.defaultvolume = struct.unpack('3H', file.read(size))
-            if self.maxqueuelength == 0:
-                self.maxqueuelength = None
-            if self.maxusersongs == 0:
-                self.maxusersongs = None
-            self.defaultvolume /= 200.0
-            # Reading strings
-            prefix_len = file.read(1)[0]
-            self.prefix = file.read(prefix_len).decode('utf-8')
-            djrole_len = file.read(1)[0]
-            self.djrole = file.read(djrole_len).decode('utf-8')
-            autoplay_len = struct.unpack('H', file.read(struct.calcsize('H')))[0]
-            if autoplay_len:
-                self.autoplay = file.read(autoplay_len).decode('utf-8')
-            else:
-                self.autoplay = None
-            # Reading channels
-            blacklist_len = struct.unpack('H', file.read(struct.calcsize('H')))[0]
-            size = struct.calcsize('%dQ' % blacklist_len)
-            blacklist_ids = struct.unpack('%dQ' % blacklist_len, file.read(size))
-            self.blacklist = [channel for channel in self.guild.text_channels if channel.id in blacklist_ids]
-                
+        # Load the bot settings from Google drive
+        if not self.client.drive:
+            return # Drive not supported
+        self.client.init_drive()
+        title = 'bluez_settings_%d.txt' % self.guild.id
+        files = self.client.drive.ListFile({'q': "title = '%s'" % title}).GetList()
+        if files:
+            settings_file = files[0]
+        else:
+            return # Nothing to load; use default settings
+        settings = settings_file.GetContentString()
+        for line in settings.splitlines():
+            if ':' not in line:
+                continue
+            setting, value = [i.strip() for i in line.split(':', 1)]
+            setting = setting.lower()
+            # Boolean settings
+            if setting in ('announcesongs', 'preventduplicates', 'djonly', 'djonlyplaylists', 'alwaysplaying'):
+                try:
+                    setattr(self, setting, bool(int(value)))
+                except ValueError:
+                    logging.warning('illegal value for setting %r: %r' % (setting, value))
+            # Integer settings
+            elif setting in ('maxqueuelength', 'maxusersongs', 'defaultvolume'):
+                try:
+                    setattr(self, setting, int(value))
+                except ValueError:
+                    logging.warning('illegal value for setting %r: %r' % (setting, value))
+                else:
+                    if setting == 'defaultvolume':
+                        self.defaultvolume /= 200.0
+                    elif getattr(self, setting) == 0:
+                        setattr(self, setting, None)
+            # String settings
+            elif setting in ('prefix', 'djrole', 'autoplay'):
+                if (setting == 'prefix') and (len(value) > 5):
+                    logging.warning('prefix %r too long' % value)
+                else:
+                    setattr(self, setting, value)
+                    if (setting == 'autoplay') and not value:
+                        self.autoplay = None
+            # Blacklist settings
+            elif setting == 'blacklist':
+                try:
+                    blacklist_ids = list(map(int, map(str.strip, value.split(','))))
+                except ValueError:
+                    logging.warning('illegal blacklist %r' % value)
+                else:
+                    self.blacklist = [channel for channel in self.guild.text_channels if channel.id in blacklist_ids]
+
+
 
 
 
     def save_settings(self):
-        # Save the bot settings to S3
-        if self.client.s3:
-            file = io.BytesIO()
-            # Writing boolean values
-            packed_int = 0
-            if self.announcesongs    : packed_int |= 0x01
-            if self.preventduplicates: packed_int |= 0x02
-            if self.djonly           : packed_int |= 0x04
-            if self.djplaylists      : packed_int |= 0x08
-            if self.alwaysplaying    : packed_int |= 0x10
-            file.write(bytes([packed_int]))
-            # Writing integers
-            file.write(struct.pack('HHB',
-                                   self.maxqueuelength or 0,
-                                   self.maxusersongs or 0,
-                                   int(round(self.defaultvolume * 200))))
-            # Writing strings
-            prefix = self.prefix.encode('utf-8')
-            file.write(bytes([len(prefix)]))
-            file.write(prefix)
-            djrole = self.djrole.encode('utf-8')
-            file.write(bytes([len(djrole)]))
-            file.write(djrole)
-            if self.autoplay:
-                autoplay = self.autoplay.encode('utf-8')
-                file.write(struct.pack('H', len(autoplay)))
-                file.write(autoplay)
-            else:
-                file.write(struct.pack('H', 0))
-            # Writing channels
-            file.write(struct.pack('H', len(self.blacklist)))
-            for channel in self.blacklist:
-                file.write(struct.pack('Q', channel.id))
-            # Save the file
-            file.seek(0)
-            try:
-                self.client.s3.upload_fileobj(file, self.client.s3_bucket, 'Guild%d' % self.guild.id)
-            except:
-                pass
+        # Save the bot settings to Google drive
+        if not self.client.drive:
+            return # Drive not supported
+        self.client.init_drive()
+        title = 'bluez_settings_%d.txt' % self.guild.id
+        files = self.client.drive.ListFile({'q': "title = '%s'" % title}).GetList()
+        if files:
+            settings_file = files[0]
+        else:
+            folder_list = self.client.drive.ListFile({'q': "title = 'bluez_settings'"}).GetList()
+            if not folder_list:
+                logging.warning('unable to find settings folder in drive')
+                return
+            settings_file = self.client.drive.CreateFile({
+                'title': title,
+                'parents': [{'id': folder_list[0]['id']}],
+                })
+        settings_string = '''\
+PREFIX            : %s
+BLACKLIST         : %s
+AUTOPLAY          : %s
+ANNOUNCESONGS     : %d
+MAXQUEUELENGTH    : %d
+MAXUSERSONGS      : %d
+PREVENTDUPLICATES : %d
+DEFAULTVOLUME     : %d
+DJONLYPLAYLISTS   : %d
+DJONLY            : %d
+DJROLE            : %s
+ALWAYSPLAYING     : %d''' % \
+(self.prefix, ','.join([str(channel.id) for channel in self.blacklist]),
+ self.autoplay or '', self.announcesongs, self.maxqueuelength or 0,
+ self.maxusersongs or 0, self.preventduplicates, self.defaultvolume * 200,
+ self.djonlyplaylists, self.djonly, self.djrole, self.alwaysplaying)
+        settings_file.SetContentString(settings_string)
+        settings_file.Upload()
                 
             
+

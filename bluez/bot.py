@@ -9,7 +9,9 @@ import logging
 import signal
 import datetime
 import lyricsgenius
-import boto3
+
+from pydrive.auth import GoogleAuth
+from pydrive.drive import GoogleDrive
 
 from bluez.player import Player
 from bluez.util import *
@@ -19,7 +21,7 @@ from bluez.util import *
 BLUEZ_DEBUG = bool(int(os.getenv('BLUEZ_DEBUG', '0')))
 BLUEZ_INVITE_LINK = os.getenv('BLUEZ_INVITE_LINK')
 BLUEZ_SOURCE_LINK = os.getenv('BLUEZ_SOURCE_LINK', 'https://github.com/hukilau17/bluez')
-BLUEZ_S3_BUCKET = os.getenv('BLUEZ_BUCKET_NAME')
+BLUEZ_DRIVE_CREDENTIALS = os.getenv('BLUEZ_DRIVE_CREDENTIALS')
 BLUEZ_RESET_TIME = os.getenv('BLUEZ_RESET_TIME')
 
 
@@ -43,7 +45,8 @@ class Bot(discord.Client):
             # this should only happen if you haven't provided a token for the genius API
             self.genius = None
         self.slash = discord_slash.SlashCommand(self)
-        self.init_s3()
+        self.drive = None
+        self.init_drive()
         if BLUEZ_DEBUG:
             logging.basicConfig(level=logging.DEBUG)
 
@@ -66,25 +69,6 @@ class Bot(discord.Client):
 
 
 
-    def init_s3(self):
-        # Initialize the Amazon S3 client.
-        # This does nothing if the environment variable BLUEZ_S3_BUCKET is not defined
-        if BLUEZ_S3_BUCKET is None:
-            self.s3 = None
-        else:
-            self.s3 = boto3.resource('s3')
-            try:
-                for bucket in s3.list_buckets()['Buckets']:
-                    if bucket['Name'] == BLUEZ_S3_BUCKET:
-                        break
-                else:
-                    self.s3.create_bucket(Bucket=BLUEZ_S3_BUCKET)
-            except:
-                self.s3 = None
-            else:
-                self.s3_bucket = BLUEZ_S3_BUCKET
-        
-
 
     def run(self):
         # Run the bot
@@ -98,6 +82,35 @@ class Bot(discord.Client):
             return self.players[target.guild.id].prefix
         else:
             return '!'
+
+
+
+    def init_drive(self):
+        # Initialize the Google drive interface
+        if self.drive:
+            gauth = self.drive.auth
+        else:
+            if not os.path.isfile('credentials.txt'):
+                if not BLUEZ_DRIVE_CREDENTIALS:
+                    return
+                with open('credentials.txt', 'w') as o:
+                    o.write(BLUEZ_DRIVE_CREDENTIALS)
+            gauth = GoogleAuth()
+            gauth.LoadCredentialsFile('credentials.txt')
+            if not gauth.credentials:
+                logging.warning('no credentials found, drive not activated')
+                self.drive = None
+                return
+        update_drive = (self.drive is None)
+        if gauth.access_token_expired:
+            gauth.Refresh()
+            update_drive = True
+        elif update_drive:
+            gauth.Authorize()
+        if update_drive:
+            gauth.SaveCredentialsFile('credentials.txt')
+            self.drive = GoogleDrive(gauth)
+        
 
 
 
@@ -209,7 +222,7 @@ class Bot(discord.Client):
             player = None
             prefix = '!'
         if self.user.mentioned_in(message):
-            reply = (await message.channel.send('**Howdy.**'))
+            reply = (await message.channel.send('**Howdy.** I am definitely not a music bot. Type `%shelp` for more info.' % prefix))
             if player:
                 player.bot_messages.append(reply)
         if not message.content.startswith(prefix):
@@ -342,6 +355,9 @@ class Bot(discord.Client):
     
 
     global_commands = ('lyrics', 'invite', 'info', 'ping', 'aliases', 'help')
+
+    if BLUEZ_DEBUG:
+        global_commands += ('reboot',)
     
     player_commands = ('join', 'play', 'playtop', 'playskip', 'search', 'soundcloud',
                        'nowplaying', 'grab', 'seek', 'rewind', 'forward', 'replay',
@@ -715,7 +731,15 @@ class Bot(discord.Client):
             await self.send(target, '**:link: Use this link to invite Bluez to other servers:** %s' % BLUEZ_INVITE_LINK)
         else:
             await self.send(target, '**:no_entry_sign: Do not add Bluez to other servers, since it is currently in beta and strictly \
-for personal use. Source code is freely available online: `%s`**' % BLUEZ_SOURCE_LINK)
+for personal use. Source code is freely available online: %s**' % BLUEZ_SOURCE_LINK)
+
+
+
+    async def command_reboot(self, target):
+        '''Reboot the Bluez bot (available in debug mode only)'''
+        # !reboot
+        await self.send(target, '**:bomb: Rebooting now, be back soon!**')
+        signal.raise_signal(signal.SIGTERM)
 
 
 
