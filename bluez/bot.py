@@ -10,8 +10,8 @@ import signal
 import datetime
 import lyricsgenius
 
-from pydrive.auth import GoogleAuth
-from pydrive.drive import GoogleDrive
+#from pydrive.auth import GoogleAuth
+#from pydrive.drive import GoogleDrive
 
 from bluez.player import Player
 from bluez.util import *
@@ -87,29 +87,30 @@ class Bot(discord.Client):
 
     def init_drive(self):
         # Initialize the Google drive interface
-        if self.drive:
-            gauth = self.drive.auth
-        else:
-            if not os.path.isfile('credentials.txt'):
-                if not BLUEZ_DRIVE_CREDENTIALS:
-                    return
-                with open('credentials.txt', 'w') as o:
-                    o.write(BLUEZ_DRIVE_CREDENTIALS)
-            gauth = GoogleAuth()
-            gauth.LoadCredentialsFile('credentials.txt')
-            if not gauth.credentials:
-                logging.warning('no credentials found, drive not activated')
-                self.drive = None
-                return
-        update_drive = (self.drive is None)
-        if gauth.access_token_expired:
-            gauth.Refresh()
-            update_drive = True
-        elif update_drive:
-            gauth.Authorize()
-        if update_drive:
-            gauth.SaveCredentialsFile('credentials.txt')
-            self.drive = GoogleDrive(gauth)
+        pass
+##        if self.drive:
+##            gauth = self.drive.auth
+##        else:
+##            if not os.path.isfile('credentials.txt'):
+##                if not BLUEZ_DRIVE_CREDENTIALS:
+##                    return
+##                with open('credentials.txt', 'w') as o:
+##                    o.write(BLUEZ_DRIVE_CREDENTIALS)
+##            gauth = GoogleAuth()
+##            gauth.LoadCredentialsFile('credentials.txt')
+##            if not gauth.credentials:
+##                logging.warning('no credentials found, drive not activated')
+##                self.drive = None
+##                return
+##        update_drive = (self.drive is None)
+##        if gauth.access_token_expired:
+##            gauth.Refresh()
+##            update_drive = True
+##        elif update_drive:
+##            gauth.Authorize()
+##        if update_drive:
+##            gauth.SaveCredentialsFile('credentials.txt')
+##            self.drive = GoogleDrive(gauth)
         
 
 
