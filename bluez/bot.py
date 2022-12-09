@@ -10,9 +10,6 @@ import signal
 import datetime
 import lyricsgenius
 
-#from pydrive.auth import GoogleAuth
-#from pydrive.drive import GoogleDrive
-
 from bluez.player import Player
 from bluez.util import *
 
@@ -21,8 +18,6 @@ from bluez.util import *
 BLUEZ_DEBUG = bool(int(os.getenv('BLUEZ_DEBUG', '0')))
 BLUEZ_INVITE_LINK = os.getenv('BLUEZ_INVITE_LINK')
 BLUEZ_SOURCE_LINK = os.getenv('BLUEZ_SOURCE_LINK', 'https://github.com/hukilau17/bluez')
-BLUEZ_DRIVE_CREDENTIALS = os.getenv('BLUEZ_DRIVE_CREDENTIALS')
-BLUEZ_RESET_TIME = os.getenv('BLUEZ_RESET_TIME')
 
 
 
@@ -45,8 +40,6 @@ class Bot(discord.Client):
             # this should only happen if you haven't provided a token for the genius API
             self.genius = None
         self.slash = discord_slash.SlashCommand(self)
-        self.drive = None
-        self.init_drive()
         if BLUEZ_DEBUG:
             logging.basicConfig(level=logging.DEBUG)
 
@@ -82,58 +75,7 @@ class Bot(discord.Client):
             return self.players[target.guild.id].prefix
         else:
             return '!'
-
-
-
-    def init_drive(self):
-        # Initialize the Google drive interface
-        pass
-##        if self.drive:
-##            gauth = self.drive.auth
-##        else:
-##            if not os.path.isfile('credentials.txt'):
-##                if not BLUEZ_DRIVE_CREDENTIALS:
-##                    return
-##                with open('credentials.txt', 'w') as o:
-##                    o.write(BLUEZ_DRIVE_CREDENTIALS)
-##            gauth = GoogleAuth()
-##            gauth.LoadCredentialsFile('credentials.txt')
-##            if not gauth.credentials:
-##                logging.warning('no credentials found, drive not activated')
-##                self.drive = None
-##                return
-##        update_drive = (self.drive is None)
-##        if gauth.access_token_expired:
-##            gauth.Refresh()
-##            update_drive = True
-##        elif update_drive:
-##            gauth.Authorize()
-##        if update_drive:
-##            gauth.SaveCredentialsFile('credentials.txt')
-##            self.drive = GoogleDrive(gauth)
         
-
-
-
-    async def schedule_reset(self):
-        # Arrange for the process to terminate itself (and then be restarted)
-        # This does nothing if the environment variable BLUEZ_RESET_TIME is not defined
-        if BLUEZ_RESET_TIME is not None:
-            # Build a datetime object that represents the next time we're going to terminate this process
-            reset_time = datetime.datetime.strptime(BLUEZ_RESET_TIME, '%H:%M:%S')
-            now = datetime.datetime.utcnow()
-            reset_time = datetime.datetime.combine(now.date(), reset_time.time())
-            if reset_time < now:
-                reset_time += datetime.timedelta(days=1)
-            delta = reset_time - now
-            # Sleep for the appropriate number of seconds
-            logging.warning('Bluez resetting in %s' % delta)
-            await asyncio.sleep(delta.total_seconds())
-            # Then reset
-            logging.warning('Bluez resetting now!')
-            signal.raise_signal(signal.SIGTERM)
-            
-            
 
 
 
@@ -172,8 +114,6 @@ class Bot(discord.Client):
         # Sets up all slash commands and creates a player for each guild
         for guild in self.guilds:
             self.players[guild.id] = Player(self, guild)
-        # Schedule reset task
-        self.reset_task = asyncio.create_task(self.schedule_reset())
         # Set up slash commands
         def slashfunc(command):
             return lambda ctx, *args, **kwargs: self.command(command, ctx, *args, **kwargs)
@@ -739,6 +679,14 @@ for personal use. Source code is freely available online: %s**' % BLUEZ_SOURCE_L
     async def command_reboot(self, target):
         '''Reboot the Bluez bot (available in debug mode only)'''
         # !reboot
+        if not getattr(target, 'guild', None):
+            # this is a DM
+            await self.send(target, '**:x: Cannot reboot from a DM.**')
+            return
+        else:
+            player = self.players[target.guild.id]
+            if not (await player.ensure_dj(target.author, target, need_join=False, need_connect=False)):
+                return
         await self.send(target, '**:bomb: Rebooting now, be back soon!**')
         signal.raise_signal(signal.SIGTERM)
 

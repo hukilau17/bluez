@@ -4,6 +4,7 @@ import discord
 import discord_slash
 import asyncio
 import re
+import os
 import random
 import collections
 import math
@@ -14,6 +15,14 @@ import tempfile
 
 from bluez.song import *
 from bluez.util import *
+
+BLUEZ_SETTINGS_PATH = os.getenv('BLUEZ_SETTINGS_PATH')
+
+# max time (in seconds) allowed in seeks.
+# nobody will be seeking forward more than, say, 30,000 years.
+# this is necessary to keep int -> float conversions from overflowing.
+MAX_TIME_VALUE = 1000000000000
+MAX_INPUT_LENGTH = 30
 
 
 
@@ -66,6 +75,7 @@ class Player(object):
         self.queue_looping = False
         self.votes = []
         self.empty_paused = False
+        self.skip_forward = False
         self.skip_backward = False
         self.idle_task = None
         self.last_started_playing = None
@@ -161,16 +171,19 @@ class Player(object):
                discord.utils.get(member.roles, name='DJ')
 
 
-    async def ensure_dj(self, member, target, need_join=True):
+    async def ensure_dj(self, member, target, need_join=True, need_connect=True):
         # Make sure the given member has the DJ role. (Also ensures they are in the right channel if necessary.)
-        ensure = (self.ensure_joined if need_join else self.ensure_connected)
-        if not (await ensure(member, target)):
-            return False
-        for voice_member in self.voice_channel.members:
-            if (voice_member != member) and (voice_member != self.client.user):
-                break
-        else:
-            return True # This user is alone with the bot
+        if need_join:
+            if not (await self.ensure_joined(member, target)):
+                return False
+        elif need_connect:
+            if not (await self.ensure_connected(member, target)):
+                return False
+            for voice_member in self.voice_channel.members:
+                if (voice_member != member) and (voice_member != self.client.user):
+                    break
+            else:
+                return True # This user is alone with the bot
         if self.is_dj(member):
             return True
         await self.send(target, '**:x: This command requires you to either have a role named DJ or the Manage Channels permission to use it** \
@@ -238,27 +251,37 @@ class Player(object):
                         self.bot_messages.append(errmsg)
             # Figure out what song to play next
             if (self.seek_pos is None) and not retrying:
-                if self.looping and (self.now_playing is not None) and not self.skip_backward:
+                if self.looping and (self.now_playing is not None) and not (self.skip_forward or self.skip_backward):
+                    # play the same song again
                     pass
                 elif self.queue and not self.skip_backward:
+                    # play the next song in the queue
                     self.now_playing = self.queue.popleft()
                     if self.queue_looping:
+                        # put the just-finished song on the end of the queue
                         self.queue.append(self.now_playing)
+                    self.skip_forward = False
                 elif (len(self.history) > 1) and self.skip_backward:
+                    # play the previous song in the history
                     self.queue.appendleft(self.now_playing)
                     self.history.pop()
                     self.now_playing, timestamp = self.history.pop()
                     self.skip_backward = False
                 else:
                     if self.skip_backward:
+                        # no previous song in the history
                         self.history.clear()
                         self.skip_backward = False
+                    # no next song in the queue
+                    self.skip_forward = False
                     self.now_playing = None
                     self.last_started_playing = None
                     self.last_paused = None
                     return
             # Fetch the audio for the song and play it
             if self.now_playing:
+                self.last_started_playing = None
+                self.last_paused = None
                 source = (await self.now_playing.get_audio(self.seek_pos or 0, self.tempo, self.pitch, self.bass,
                                                            self.nightcore, self.slowed, self.volume, self.stderr))
                 if isinstance(source, Exception):
@@ -267,7 +290,6 @@ class Player(object):
                     return
                 self.voice_client.play(source, after=self._play_next_callback)
                 self.last_started_playing = time.time() - (self.seek_pos or 0)
-                self.last_paused = None
                 if (self.seek_pos is None) and not retrying:
                     self.history.append((self.now_playing, self.get_local_time()))
                 announce = (self.announcesongs and (self.seek_pos is None) and not retrying)
@@ -287,11 +309,12 @@ class Player(object):
 
 
 
-    async def skip(self, target, backward=False):
+    async def skip(self, target, forward=True, backward=False):
         # Skip to the next song on the queue.
         # Does the same thing as play_next() if there's not
         # currently a song playing.
         if self.voice_client is not None:
+            self.skip_forward = forward
             self.skip_backward = backward
             if self.voice_client.is_playing() or self.voice_client.is_paused():
                 self.voice_client.stop()
@@ -320,7 +343,7 @@ class Player(object):
         # Called when the audio effects (volume, speed, bass, etc.) are changed
         # Effectively the same as a "seek" to the current time
         if (self.voice_client is not None) and (self.voice_client.is_playing() or self.voice_client.is_paused()):
-            self.seek_pos = self.get_current_time()
+            self.seek_pos = (self.get_current_time() or 0)
             self.seek_pos *= self.now_playing.tempo / self.get_adjusted_tempo()
             self.voice_client.stop()
 
@@ -448,7 +471,7 @@ class Player(object):
             else:
                 time = sum([i.length for i in tuple(self.queue)[:position]]) / self.get_adjusted_tempo()
                 if self.now_playing is not None:
-                    time += max(self.now_playing.adjusted_length - self.get_current_time(), 0)
+                    time += max(self.now_playing.adjusted_length - (self.get_current_time() or 0), 0)
                 if time == 0:
                     if self.now_playing and not self.now_playing.length:
                         time = 'Unknown'
@@ -681,7 +704,7 @@ class Player(object):
                 if time is not None:
                     time = max(time, 0)
                     if time > self.now_playing.adjusted_length:
-                        await self.skip(target)
+                        await self.skip(target, forward=False) # don't break out of a loop
                     else:
                         await self.seek(time, target)
 
@@ -698,7 +721,7 @@ class Player(object):
             else:
                 time = (await self.parse_time(time, target))
                 if time is not None:
-                    time = self.get_current_time() - time
+                    time = (self.get_current_time() or 0) - time
                     time = max(time, 0)
                     await self.seek(time, target)
 
@@ -715,9 +738,9 @@ class Player(object):
             else:
                 time = (await self.parse_time(time, target))
                 if time is not None:
-                    time = self.get_current_time() + time
+                    time = (self.get_current_time() or 0) + time
                     if time > self.now_playing.adjusted_length:
-                        await self.skip(target)
+                        await self.skip(target, forward=False) # don't break out of a loop
                     else:
                         await self.seek(time, target)
 
@@ -774,6 +797,9 @@ class Player(object):
                 except IndexError:
                     position = None
                 else:
+                    if len(position) > MAX_INPUT_LENGTH:
+                        await self.send(target, '**:x: position `%s` is too large to parse**' % position)
+                        return
                     try:
                         position = int(position)
                     except ValueError:
@@ -845,7 +871,7 @@ class Player(object):
         # !back
         if (await self.ensure_history(target.author, target)) and \
            (await self.ensure_dj(target.author, target)):
-            await self.skip(target, backward=True)
+            await self.skip(target, forward=False, backward=True)
         
 
 
@@ -900,6 +926,9 @@ class Player(object):
                     position = target.content[len(self.prefix):].split(None, 1)[1]
                 except IndexError:
                     position = ''
+                if len(position) > MAX_INPUT_LENGTH:
+                    await self.send(target, '**:x: position `%s` is too large to parse**' % position)
+                    return
                 try:
                     position = int(position)
                 except ValueError:
@@ -936,6 +965,9 @@ class Player(object):
                     content = ''
                 numbers = []
                 for string in content.split():
+                    if len(string) > MAX_INPUT_LENGTH:
+                        await self.send(target, '**:x: position `%s` is too large to parse**' % string)
+                        return
                     try:
                         numbers.append(int(string))
                     except ValueError:
@@ -1447,24 +1479,38 @@ class Player(object):
 
 
     async def parse_time(self, time, target):
+        if len(time) > MAX_INPUT_LENGTH:
+            await self.send(target, '**:x: time `%s` is too large to parse**' % time)
+            return
         try:
-            return int(time)
+            result = int(time)
         except ValueError:
-            pass
-        match = re.match(r'(?:(\d+):)?(\d+):(\d+)', time)
-        if match:
-            h = int(match.group(1) or 0)
-            m = int(match.group(2))
-            s = int(match.group(3))
-            return 3600*h + 60*m + s
-        match = re.match(r'(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)', time)
-        if match:
-            h = int(match.group(1) or 0)
-            m = int(match.group(2) or 0)
-            s = int(match.group(3) or 0)
-            return 3600*h + 60*m + s
-        await self.send(target, '**:x: unable to parse time `%s`**' % time)
-
+            match = re.match(r'(?:(\d+):)?(\d+):(\d+)$', time)
+            if match:
+                h = int(match.group(1) or 0)
+                m = int(match.group(2))
+                s = int(match.group(3))
+                result = 3600*h + 60*m + s
+            else:
+                match = re.match(r'(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$', time)
+                if match and match.group():
+                    h = int(match.group(1) or 0)
+                    m = int(match.group(2) or 0)
+                    s = int(match.group(3) or 0)
+                    result = 3600*h + 60*m + s
+                else:
+                    await self.send(target, '**:x: unable to parse time `%s`**' % time)
+                    return
+        if result < 0:
+            await self.send(target, '**:x: number of seconds must be nonnegative**' % time)
+            return
+        if abs(result) > MAX_TIME_VALUE:
+            # thanks to all the lovely Austin Math Circle members
+            # for tirelessly trying to break my bot
+            # and ultimately forcing me to add this code here.
+            await self.send(target, '**:x: time `%s` is too large to parse**' % time)
+            return
+        return result
 
 
     async def parse_boolean(self, value, target):
@@ -1479,6 +1525,9 @@ class Player(object):
 
 
     async def parse_integer(self, value, target, min=None, max=None):
+        if len(value) > MAX_INPUT_LENGTH:
+            await self.send(target, '**:x: integer `%s` is too large to parse**' % position)
+            return
         try:
             value = int(value)
         except ValueError:
@@ -1494,6 +1543,10 @@ class Player(object):
         try:
             value = float(value)
         except ValueError:
+            await self.send(target, '**:x: unable to parse number `%s`**' % value)
+            return None
+        if math.isinf(value) or math.isnan(value):
+            # treat infs and nans as unparseable
             await self.send(target, '**:x: unable to parse number `%s`**' % value)
             return None
         if (min is not None) and (max is not None) and not (min <= value <= max):
@@ -1706,16 +1759,14 @@ class Player(object):
 
     def load_settings(self):
         # Load the bot settings from Google drive
-        if not self.client.drive:
-            return # Drive not supported
-        self.client.init_drive()
-        title = 'bluez_settings_%d.txt' % self.guild.id
-        files = self.client.drive.ListFile({'q': "title = '%s'" % title}).GetList()
-        if files:
-            settings_file = files[0]
-        else:
-            return # Nothing to load; use default settings
-        settings = settings_file.GetContentString()
+        if not BLUEZ_SETTINGS_PATH:
+            return # no settings path
+        filename = os.path.join(BLUEZ_SETTINGS_PATH, 'bluez_settings_%d.txt' % self.guild.id)
+        try:
+            with open(filename, 'r') as o:
+                settings = o.read()
+        except IOError:
+            return # unable to find settings file; use defaults
         for line in settings.splitlines():
             if ':' not in line:
                 continue
@@ -1757,27 +1808,12 @@ class Player(object):
 
 
 
-
-
     def save_settings(self):
         # Save the bot settings to Google drive
-        if not self.client.drive:
-            return # Drive not supported
-        self.client.init_drive()
-        title = 'bluez_settings_%d.txt' % self.guild.id
-        files = self.client.drive.ListFile({'q': "title = '%s'" % title}).GetList()
-        if files:
-            settings_file = files[0]
-        else:
-            folder_list = self.client.drive.ListFile({'q': "title = 'bluez_settings'"}).GetList()
-            if not folder_list:
-                logging.warning('unable to find settings folder in drive')
-                return
-            settings_file = self.client.drive.CreateFile({
-                'title': title,
-                'parents': [{'id': folder_list[0]['id']}],
-                })
-        settings_string = '''\
+        if not BLUEZ_SETTINGS_PATH:
+            return # no settings path
+        filename = os.path.join(BLUEZ_SETTINGS_PATH, 'bluez_settings_%d.txt' % self.guild.id)
+        settings = '''\
 PREFIX            : %s
 BLACKLIST         : %s
 AUTOPLAY          : %s
@@ -1794,8 +1830,12 @@ ALWAYSPLAYING     : %d''' % \
  self.autoplay or '', self.announcesongs, self.maxqueuelength or 0,
  self.maxusersongs or 0, self.preventduplicates, self.defaultvolume * 200,
  self.djonlyplaylists, self.djonly, self.djrole, self.alwaysplaying)
-        settings_file.SetContentString(settings_string)
-        settings_file.Upload()
+        try:
+            with open(filename, 'w') as o:
+                o.write(settings)
+        except IOError:
+            pass # unable to create settings file
+        
                 
             
 

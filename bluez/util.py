@@ -2,6 +2,8 @@
 
 
 def format_time(time):
+    if time < 0:
+        time = 0
     if time < 3600:
         return '%d:%.2d' % (time // 60, time % 60)
     else:
