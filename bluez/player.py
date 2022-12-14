@@ -36,6 +36,7 @@ class Player(object):
         self.reset_settings()
         self.reset()
         self.load_settings()
+        self.mutex = asyncio.Lock()
 
 
     # Functions for initializing/resetting the bot's state
@@ -212,10 +213,11 @@ class Player(object):
             except Exception as e:
                 await self.send(target, '**:x: Error playing songs from `%s`: `%s`**' % (self.autoplay, e))
             else:
-                self.queue.extend(songs)
-                random.shuffle(self.queue)
-                await self.enqueue_message(0, songs, target)
-                await self.wake_up()
+                async with self.mutex:
+                    self.queue.extend(songs)
+                    random.shuffle(self.queue)
+                    await self.enqueue_message(0, songs, target)
+                    await self.wake_up()
 
 
     async def disconnect(self, target=None):
@@ -229,9 +231,11 @@ class Player(object):
 
 
 
-    async def play_next(self, error=None):
+    async def play_next(self, error=None, lock=False):
         # Play the next song from the queue, if it exists
         # Should only be called when nothing is currently playing
+        if lock:
+            await self.mutex.acquire()
         self.votes = []
         if self.voice_client is not None:
             # Check for an error with the previous song
@@ -277,6 +281,8 @@ class Player(object):
                     self.now_playing = None
                     self.last_started_playing = None
                     self.last_paused = None
+                    if lock:
+                        self.mutex.release()
                     return
             # Fetch the audio for the song and play it
             if self.now_playing:
@@ -286,7 +292,9 @@ class Player(object):
                                                            self.nightcore, self.slowed, self.volume, self.stderr))
                 if isinstance(source, Exception):
                     self.seek_pos = None
-                    await self.play_next(source)
+                    await self.play_next(source, lock=False)
+                    if lock:
+                        self.mutex.release()
                     return
                 self.voice_client.play(source, after=self._play_next_callback)
                 self.last_started_playing = time.time() - (self.seek_pos or 0)
@@ -300,12 +308,14 @@ class Player(object):
             self.now_playing = None
             self.last_started_playing = None
             self.last_paused = None
+        if lock:
+            self.mutex.release()
 
 
 
     def _play_next_callback(self, error):
         # Callback for play_next()
-        self._play_next_task = self.client.loop.create_task(self.play_next(error))
+        self._play_next_task = self.client.loop.create_task(self.play_next(error, lock=True))
 
 
 
@@ -373,6 +383,8 @@ class Player(object):
             return True # these are not worth complaining about
         if 'Estimating duration from bitrate' in errmsg:
             return True # this is a warning, not an error
+        if 'Output file is empty, nothing was encoded' in errmsg:
+            return True # the user messed with the audio effects for a song right as it was ending
         return False
 
 
@@ -556,10 +568,11 @@ class Player(object):
             songs = (await self.trim_songs(songs, target))
             if not songs:
                 return
-            n = len(self.queue)
-            self.queue.extend(songs)
-            await self.enqueue_message(n, songs, target)
-            await self.wake_up()
+            async with self.mutex:
+                n = len(self.queue)
+                self.queue.extend(songs)
+                await self.enqueue_message(n, songs, target)
+                await self.wake_up()
 
 
     async def command_playtop(self, target, query=None):
@@ -577,9 +590,10 @@ class Player(object):
             songs = (await self.trim_songs(songs, target))
             if not songs:
                 return
-            self.queue.extendleft(songs[::-1])
-            await self.enqueue_message(0, songs, target)
-            await self.wake_up()
+            async with self.mutex:
+                self.queue.extendleft(songs[::-1])
+                await self.enqueue_message(0, songs, target)
+                await self.wake_up()
 
 
     async def command_playskip(self, target, query=None):
@@ -597,9 +611,10 @@ class Player(object):
             songs = (await self.trim_songs(songs, target))
             if not songs:
                 return
-            self.queue.extendleft(songs[::-1])
-            await self.enqueue_message(0, songs, target, now=True)
-            await self.skip(target)
+            async with self.mutex:
+                self.queue.extendleft(songs[::-1])
+                await self.enqueue_message(0, songs, target, now=True)
+                await self.skip(target)
 
 
     async def command_search(self, target, query=None):
@@ -651,9 +666,10 @@ class Player(object):
             if not (await self.trim_songs([song], target)):
                 return # the user can't queue this song for some reason
             song.process()
-            self.queue.append(song)
-            await self.enqueue_message(len(self.queue) - 1, [song], target)
-            await self.wake_up()
+            async with self.mutex:
+                self.queue.append(song)
+                await self.enqueue_message(len(self.queue) - 1, [song], target)
+                await self.wake_up()
             
 
 
@@ -669,32 +685,34 @@ class Player(object):
             songs = (await self.trim_songs(songs, target))
             if not songs:
                 return
-            n = len(self.queue)
-            self.queue.extend(songs)
-            await self.enqueue_message(n, songs, target)
-            await self.wake_up()
+            async with self.mutex:
+                n = len(self.queue)
+                self.queue.extend(songs)
+                await self.enqueue_message(n, songs, target)
+                await self.wake_up()
 
 
     async def command_nowplaying(self, target):
         '''Show what song is currently playing'''
         # !nowplaying
-        if (await self.ensure_playing(target.author, target)):
-            await self.np_message(target)
+        async with self.mutex:
+            if (await self.ensure_playing(target.author, target)):
+                await self.np_message(target)
 
 
     async def command_grab(self, target):
         '''Save the song currently playing to your DMs'''
         # !grab
-        if (await self.ensure_playing(target.author, target)):
-            await self.np_message(target.author)
-            await self.send(target)
+        async with self.mutex:
+            if (await self.ensure_playing(target.author, target)):
+                await self.np_message(target.author)
+                await self.send(target)
 
 
     async def command_seek(self, target, time=None):
         '''Seek to a certain point in the current track'''
         # !seek
-        if (await self.ensure_playing(target.author, target)) and \
-           (await self.ensure_dj(target.author, target)):
+        if (await self.ensure_dj(target.author, target)):
             time = self.get_string(target, time)
             if time is None:
                 await self.usage_embed('%sseek [time]' % self.prefix, target)
@@ -702,18 +720,19 @@ class Player(object):
             else:
                 time = (await self.parse_time(time, target))
                 if time is not None:
-                    time = max(time, 0)
-                    if time > self.now_playing.adjusted_length:
-                        await self.skip(target, forward=False) # don't break out of a loop
-                    else:
-                        await self.seek(time, target)
+                    async with self.mutex:
+                        if (await self.ensure_playing(target.author, target)):
+                            time = max(time, 0)
+                            if time > self.now_playing.adjusted_length:
+                                await self.skip(target, forward=False) # don't break out of a loop
+                            else:
+                                await self.seek(time, target)
 
 
     async def command_rewind(self, target, time=None):
         '''Rewind by a certain amount of time in the current track'''
         # !rewind
-        if (await self.ensure_playing(target.author, target)) and \
-           (await self.ensure_dj(target.author, target)):
+        if (await self.ensure_dj(target.author, target)):
             time = self.get_string(target, time)
             if time is None:
                 await self.usage_embed('%srewind [seconds]' % self.prefix, target)
@@ -721,16 +740,17 @@ class Player(object):
             else:
                 time = (await self.parse_time(time, target))
                 if time is not None:
-                    time = (self.get_current_time() or 0) - time
-                    time = max(time, 0)
-                    await self.seek(time, target)
+                    async with self.mutex:
+                        if (await self.ensure_playing(target.author, target)):
+                            time = (self.get_current_time() or 0) - time
+                            time = max(time, 0)
+                            await self.seek(time, target)
 
 
     async def command_forward(self, target, time=None):
         '''Skip forward by a certain amount of time in the current track'''
         # !forward
-        if (await self.ensure_playing(target.author, target)) and \
-           (await self.ensure_dj(target.author, target)):
+        if (await self.ensure_dj(target.author, target)):
             time = self.get_string(target, time)
             if time is None:
                 await self.usage_embed('%sforward [seconds]' % self.prefix, target)
@@ -738,59 +758,63 @@ class Player(object):
             else:
                 time = (await self.parse_time(time, target))
                 if time is not None:
-                    time = (self.get_current_time() or 0) + time
-                    if time > self.now_playing.adjusted_length:
-                        await self.skip(target, forward=False) # don't break out of a loop
-                    else:
-                        await self.seek(time, target)
+                    async with self.mutex:
+                        if (await self.ensure_playing(target.author, target)):
+                            time = (self.get_current_time() or 0) + time
+                            if time > self.now_playing.adjusted_length:
+                                await self.skip(target, forward=False) # don't break out of a loop
+                            else:
+                                await self.seek(time, target)
 
 
     async def command_replay(self, target):
         '''Reset the progress of the current song'''
         # !replay
-        if (await self.ensure_playing(target.author, target)) and \
-           (await self.ensure_dj(target.author, target)):
-            await self.seek(0, target)
+        async with self.mutex:
+            if (await self.ensure_playing(target.author, target)) and \
+               (await self.ensure_dj(target.author, target)):
+                await self.seek(0, target)
 
 
     async def command_loop(self, target):
         '''Toggle looping for the currently playing song'''
         # !loop
-        if (await self.ensure_playing(target.author, target)) and \
-           (await self.ensure_dj(target.author, target)):
-            self.looping = (not self.looping)
-            if self.looping:
-                await self.send(target, '**:repeat_one: Enabled!**')
-            else:
-                await self.send(target, '**:repeat_one: Disabled!**')
+        async with self.mutex:
+            if (await self.ensure_dj(target.author, target)) and \
+               (await self.ensure_playing(target.author, target)):
+                self.looping = (not self.looping)
+                if self.looping:
+                    await self.send(target, '**:repeat_one: Enabled!**')
+                else:
+                    await self.send(target, '**:repeat_one: Disabled!**')
             
 
     async def command_voteskip(self, target):
         '''Vote to skip the currently playing song'''
         # !voteskip
-        if (await self.ensure_playing(target.author, target)) and \
-           (await self.ensure_joined(target.author, target)):
-            if len(self.voice_channel.members) <= 3:
-                await self.skip(target)
-            elif target.author in self.votes:
-                await self.send(target, '**:x: You already voted to skip the current song** (%d/%d people)' \
-                                % (len(self.votes), int(.75 * (len(self.voice_channel.members) - 1))))
-            else:
-                self.votes.append(target.author)
-                if len(self.votes) >= int(.75 * (len(self.voice_channel.members) - 1)):
+        async with self.mutex:
+            if (await self.ensure_joined(target.author, target)) and \
+               (await self.ensure_playing(target.author, target)):
+                if len(self.voice_channel.members) <= 3:
                     await self.skip(target)
+                elif target.author in self.votes:
+                    await self.send(target, '**:x: You already voted to skip the current song** (%d/%d people)' \
+                                    % (len(self.votes), int(.75 * (len(self.voice_channel.members) - 1))))
                 else:
-                    await self.send(target, '**Skipping?** (%d/%d people)%s' \
-                                    % (len(self.votes), int(.75 * (len(self.voice_channel.members) - 1)),
-                                       ' **`%sforceskip` or `%sfs` to force**' % (self.prefix, self.prefix) \
-                                       if self.is_dj(target.author) else ''))
+                    self.votes.append(target.author)
+                    if len(self.votes) >= int(.75 * (len(self.voice_channel.members) - 1)):
+                        await self.skip(target)
+                    else:
+                        await self.send(target, '**Skipping?** (%d/%d people)%s' \
+                                        % (len(self.votes), int(.75 * (len(self.voice_channel.members) - 1)),
+                                           ' **`%sforceskip` or `%sfs` to force**' % (self.prefix, self.prefix) \
+                                           if self.is_dj(target.author) else ''))
                     
 
     async def command_forceskip(self, target, position=None):
         '''Skip the currently playing song immediately'''
         # !forceskip
-        if (await self.ensure_playing(target.author, target)) and \
-           (await self.ensure_dj(target.author, target)):
+        if (await self.ensure_dj(target.author, target)):
             if isinstance(target, discord.Message):
                 try:
                     position = target.content[len(self.prefix):].split(None, 1)[1]
@@ -807,41 +831,45 @@ class Player(object):
                         return
             if position is None:
                 position = 1
-            for n in range(position-1):
-                if self.queue:
-                    song = self.queue.popleft()
-                    if self.queue_looping:
-                        self.queue.append(song)
-                else:
-                    break
-            await self.skip(target)
+            async with self.mutex:
+                if (await self.ensure_playing(target.author, target)):
+                    for n in range(position-1):
+                        if self.queue:
+                            song = self.queue.popleft()
+                            if self.queue_looping:
+                                self.queue.append(song)
+                        else:
+                            break
+                    await self.skip(target)
 
 
     async def command_pause(self, target):
         '''Pause the currently playing track'''
         # !pause
-        if (await self.ensure_playing(target.author, target)) and \
-           (await self.ensure_dj(target.author, target)):
-            if self.last_paused is None:
-                self.voice_client.pause()
-                self.last_paused = time.time()
-                await self.send(target, '**Paused :pause_button:**')
-            else:
-                await self.send(target, '**:no_entry_sign: Already paused**')
+        async with self.mutex:
+            if (await self.ensure_dj(target.author, target)) and \
+               (await self.ensure_playing(target.author, target)):
+                if self.last_paused is None:
+                    self.voice_client.pause()
+                    self.last_paused = time.time()
+                    await self.send(target, '**Paused :pause_button:**')
+                else:
+                    await self.send(target, '**:no_entry_sign: Already paused**')
 
 
     async def command_resume(self, target):
         '''Resume paused music'''
         # !resume
-        if (await self.ensure_playing(target.author, target)) and \
-           (await self.ensure_dj(target.author, target)):
-            if self.last_paused is not None:
-                self.voice_client.resume()
-                self.last_started_playing += (time.time() - self.last_paused)
-                self.last_paused = None
-                await self.send(target, '**:play_pause: Resuming :thumbsup:**')
-            else:
-                await self.send(target, '**:no_entry_sign: Already playing**')
+        async with self.mutex:
+            if (await self.ensure_dj(target.author, target)) and \
+               (await self.ensure_playing(target.author, target)):
+                if self.last_paused is not None:
+                    self.voice_client.resume()
+                    self.last_started_playing += (time.time() - self.last_paused)
+                    self.last_paused = None
+                    await self.send(target, '**:play_pause: Resuming :thumbsup:**')
+                else:
+                    await self.send(target, '**:no_entry_sign: Already playing**')
             
 
     async def command_disconnect(self, target):
@@ -869,29 +897,30 @@ class Player(object):
     async def command_back(self, target):
         '''Skip backwards and play the previous song again'''
         # !back
-        if (await self.ensure_history(target.author, target)) and \
-           (await self.ensure_dj(target.author, target)):
-            await self.skip(target, forward=False, backward=True)
+        async with self.mutex:
+            if (await self.ensure_dj(target.author, target)) and \
+               (await self.ensure_history(target.author, target)):
+                await self.skip(target, forward=False, backward=True)
         
 
 
     async def command_loopqueue(self, target):
         '''Toggle looping for the whole queue'''
         # !loopqueue
-        if (await self.ensure_queue(target.author, target)) and \
-           (await self.ensure_dj(target.author, target)):
-            self.queue_looping = (not self.queue_looping)
-            if self.queue_looping:
-                await self.send(target, '**:repeat: Enabled!**')
-            else:
-                await self.send(target, '**:repeat: Disabled!**')
+        async with self.mutex:
+            if (await self.ensure_dj(target.author, target)) and \
+               (await self.ensure_queue(target.author, target)):
+                self.queue_looping = (not self.queue_looping)
+                if self.queue_looping:
+                    await self.send(target, '**:repeat: Enabled!**')
+                else:
+                    await self.send(target, '**:repeat: Disabled!**')
 
 
     async def command_move(self, target, old=None, new=None):
         '''Move a certain song to a chosen position in the queue'''
         # !move
-        if (await self.ensure_queue(target.author, target)) and \
-           (await self.ensure_dj(target.author, target)):
+        if (await self.ensure_dj(target.author, target)):
             if isinstance(target, discord.Message):
                 try:
                     numbers = target.content[len(self.prefix):].split(None, 1)[1]
@@ -907,20 +936,21 @@ class Player(object):
                     return
             elif new is None:
                 new = 1
-            if not ((1 <= old <= len(self.queue)) and (1 <= new <= len(self.queue))):
-                await self.send(target, '**:x: Invalid position, should be between 1 and %d**' % len(self.queue))
-            else:
-                song = self.queue[old - 1]
-                del self.queue[old - 1]
-                self.queue.insert(new - 1, song)
-                await self.send(target, '**:white_check_mark: Moved `%s` to position %d in the queue**' % (song.name, new))
+            async with self.mutex:
+                if (await self.ensure_queue(target.author, target)):
+                    if not ((1 <= old <= len(self.queue)) and (1 <= new <= len(self.queue))):
+                        await self.send(target, '**:x: Invalid position, should be between 1 and %d**' % len(self.queue))
+                    else:
+                        song = self.queue[old - 1]
+                        del self.queue[old - 1]
+                        self.queue.insert(new - 1, song)
+                        await self.send(target, '**:white_check_mark: Moved `%s` to position %d in the queue**' % (song.name, new))
 
 
     async def command_skipto(self, target, position=None):
         '''Skip to a certain position in the queue'''
         # !skipto
-        if (await self.ensure_queue(target.author, target)) and \
-           (await self.ensure_dj(target.author, target)):
+        if (await self.ensure_dj(target.author, target)):
             if isinstance(target, discord.Message):
                 try:
                     position = target.content[len(self.prefix):].split(None, 1)[1]
@@ -934,30 +964,33 @@ class Player(object):
                 except ValueError:
                     await self.usage_embed('%sskipto [position]' % self.prefix, target)
                     return
-            if not (1 <= position <= len(self.queue)):
-                await self.send(target, '**:x: Invalid position, should be between 1 and %d**' % len(self.queue))
-            else:
-                for n in range(position-1):
-                    song = self.queue.popleft()
-                    if self.queue_looping:
-                        self.queue.append(song)
-                await self.skip(target)
+            async with self.mutex:
+                if (await self.ensure_queue(target.author, target)):
+                    if not (1 <= position <= len(self.queue)):
+                        await self.send(target, '**:x: Invalid position, should be between 1 and %d**' % len(self.queue))
+                    else:
+                        for n in range(position-1):
+                            song = self.queue.popleft()
+                            if self.queue_looping:
+                                self.queue.append(song)
+                        await self.skip(target)
 
 
     async def command_shuffle(self, target):
         '''Shuffle the entire queue'''
         # !shuffle
-        if (await self.ensure_queue(target.author, target)) and \
-           (await self.ensure_dj(target.author, target)):
-            random.shuffle(self.queue)
-            await self.send(target, '**:twisted_rightwards_arrows: Shuffled queue :ok_hand:**')
+        async with self.mutex:
+            if (await self.ensure_queue(target.author, target)) and \
+               (await self.ensure_dj(target.author, target)):
+                random.shuffle(self.queue)
+                await self.send(target, '**:twisted_rightwards_arrows: Shuffled queue :ok_hand:**')
 
 
     async def command_remove(self, target, position=None, start=None, end=None):
         '''Remove a certain entry from the queue'''
         # !remove
-        if (await self.ensure_queue(target.author, target)) and \
-           (await self.ensure_dj(target.author, target)):
+        if (await self.ensure_dj(target.author, target)):
+            is_range = False
             if isinstance(target, discord.Message):
                 try:
                     content = target.content[len(self.prefix):].split(None, 1)[1]
@@ -981,67 +1014,74 @@ class Player(object):
             elif target.subcommand_name == 'song':
                 numbers = [position]
             else: # range subcommand
-                numbers = range(start, len(self.queue) if end is None else end+1)
-            for number in numbers:
-                if not (1 <= number <= len(self.queue)):
-                    await self.send(target, '**:x: Invalid position, should be between 1 and %d**' % len(self.queue))
-                    break
-            else:
-                numbers = sorted(set(numbers), reverse=True)
-                removed = []
-                for n in numbers:
-                    removed.append(self.queue[n-1])
-                    del self.queue[n-1]
-                if len(removed) > 1:
-                    await self.send(target, '**:white_check_mark: Removed `%d` songs**' % len(removed))
-                elif len(removed) == 1:
-                    await self.send(target, '**:white_check_mark: Removed `%s`**' % removed[0].name)
+                is_range = True
+            removed = []
+            async with self.mutex:
+                if (await self.ensure_queue(target.author, target)):
+                    if is_range:
+                        numbers = range(start, len(self.queue) if end is None else end+1)
+                    for number in numbers:
+                        if not (1 <= number <= len(self.queue)):
+                            await self.send(target, '**:x: Invalid position, should be between 1 and %d**' % len(self.queue))
+                            break
+                    else:
+                        numbers = sorted(set(numbers), reverse=True)
+                        for n in numbers:
+                            removed.append(self.queue[n-1])
+                            del self.queue[n-1]
+            if len(removed) > 1:
+                await self.send(target, '**:white_check_mark: Removed `%d` songs**' % len(removed))
+            elif len(removed) == 1:
+                await self.send(target, '**:white_check_mark: Removed `%s`**' % removed[0].name)
 
 
     async def command_clear(self, target, user=None):
         '''Clear the whole queue'''
         # !clear
-        if (await self.ensure_queue(target.author, target)) and \
-           (await self.ensure_dj(target.author, target)):
+        if (await self.ensure_dj(target.author, target)):
             if isinstance(target, discord.Message) and target.mentions:
                 user = target.mentions[0]
-            if user is None:
-                self.queue.clear()
-                await self.send(target, '***:boom: Cleared... :stop_button:***')
-            else:
-                n = 0
-                for song in tuple(self.queue):
-                    if song.user == user:
-                        self.queue.remove(song)
-                        n += 1
-                await self.send(target, '**:thumbsup: %d song%s removed from the queue**' % (n, '' if n == 1 else 's'))
+            async with self.mutex:
+                if (await self.ensure_queue(target.author, target)):
+                    if user is None:
+                        self.queue.clear()
+                        await self.send(target, '***:boom: Cleared... :stop_button:***')
+                    else:
+                        n = 0
+                        for song in tuple(self.queue):
+                            if song.user == user:
+                                self.queue.remove(song)
+                                n += 1
+                        await self.send(target, '**:thumbsup: %d song%s removed from the queue**' % (n, '' if n == 1 else 's'))
 
 
     async def command_leavecleanup(self, target):
         '''Remove absent users' songs from the queue'''
         # !leavecleanup
-        if (await self.ensure_queue(target.author, target)) and \
-           (await self.ensure_dj(target.author, target)):
-            n = 0
-            for song in tuple(self.queue):
-                if song.user not in self.voice_channel.members:
-                    self.queue.remove(song)
-                    n += 1
-            await self.send(target, '**:thumbsup: %d song%s removed from the queue**' % (n, '' if n == 1 else 's'))
+        async with self.mutex:
+            if (await self.ensure_dj(target.author, target)) and \
+               (await self.ensure_queue(target.author, target)):
+                n = 0
+                for song in tuple(self.queue):
+                    if song.user not in self.voice_channel.members:
+                        self.queue.remove(song)
+                        n += 1
+                await self.send(target, '**:thumbsup: %d song%s removed from the queue**' % (n, '' if n == 1 else 's'))
             
 
     async def command_removedupes(self, target):
         '''Remove duplicate songs from the queue'''
         # !removedupes
-        if (await self.ensure_queue(target.author, target)) and \
-           (await self.ensure_dj(target.author, target)):
-            t = tuple(self.queue)
-            n = 0
-            for i, song in enumerate(t):
-                if song in t[:i]:
-                    self.queue.remove(song)
-                    n += 1
-            await self.send(target, '**:thumbsup: %d song%s removed from the queue**' % (n, '' if n == 1 else 's'))
+        async with self.mutex:
+            if (await self.ensure_dj(target.author, target)) and \
+               (await self.ensure_queue(target.author, target)):
+                t = tuple(self.queue)
+                n = 0
+                for i, song in enumerate(t):
+                    if song in t[:i]:
+                        self.queue.remove(song)
+                        n += 1
+                await self.send(target, '**:thumbsup: %d song%s removed from the queue**' % (n, '' if n == 1 else 's'))
 
 
 
@@ -1340,7 +1380,8 @@ class Player(object):
                     return
                 # Otherwise reset everything
                 self.reset_effects()
-                self.update_audio()
+                async with self.mutex:
+                    self.update_audio()
                 await self.send(target, '**:white_check_mark: All audio effects have been reset to their defaults**')
         else:
             await self.send(target, '**:x: Unknown command; should be `%seffects`, `%seffects help`, or `%seffects clear`**' % \
@@ -1356,8 +1397,9 @@ class Player(object):
             if speed is None:
                 await self.send(target, '**:man_running: Current playback speed is set to %.3g**' % self.tempo)
             elif (await self.ensure_dj(target.author, target)):
-                self.tempo = speed
-                self.update_audio()
+                async with self.mutex:
+                    self.tempo = speed
+                    self.update_audio()
                 await self.send(target, '**:white_check_mark: Playback speed set to %.3g**' % self.tempo)
 
 
@@ -1388,8 +1430,9 @@ class Player(object):
                 else:
                     await self.send(target, '**:musical_score: Current playback frequency multiplier is set to %.3g**' % self.pitch)
             elif (await self.ensure_dj(target.author, target)):
-                self.pitch = scale
-                self.update_audio()
+                async with self.mutex:
+                    self.pitch = scale
+                    self.update_audio()
                 if semitones:
                     await self.send(target, '**:white_check_mark: Playback pitch shifted by %.3g semitones**' % shift)
                 else:
@@ -1405,8 +1448,9 @@ class Player(object):
             if bass is None:
                 await self.send(target, '**:guitar: Current bass boost is set to %d**' % self.bass)
             elif (await self.ensure_dj(target.author, target)):
-                self.bass = bass
-                self.update_audio()
+                async with self.mutex:
+                    self.bass = bass
+                    self.update_audio()
                 await self.send(target, '**:white_check_mark: Bass boost set to %d**' % self.bass)
 
 
@@ -1416,8 +1460,9 @@ class Player(object):
         # !nightcore
         if (await self.ensure_connected(target.author, target)) and \
            (await self.ensure_dj(target.author, target)):
-            self.nightcore = (not self.nightcore)
-            self.update_audio()
+            async with self.mutex:
+                self.nightcore = (not self.nightcore)
+                self.update_audio()
             await self.send(target, '**:white_check_mark: Nightcore effect turned %s**' % ('on' if self.nightcore else 'off'))
 
 
@@ -1426,8 +1471,9 @@ class Player(object):
         # !slowed
         if (await self.ensure_connected(target.author, target)) and \
            (await self.ensure_dj(target.author, target)):
-            self.slowed = (not self.slowed)
-            self.update_audio()
+            async with self.mutex:
+                self.slowed = (not self.slowed)
+                self.update_audio()
             await self.send(target, '**:white_check_mark: Slowed effect turned %s**' % ('on' if self.slowed else 'off'))
 
 
@@ -1440,8 +1486,9 @@ class Player(object):
             if volume is None:
                 await self.send(target, '**:loud_sound: Volume is currently set to %d**' % round(200 * self.volume))
             elif (await self.ensure_dj(target.author, target)):
-                self.volume = volume / 200.0
-                self.update_audio()
+                async with self.mutex:
+                    self.volume = volume / 200.0
+                    self.update_audio()
                 await self.send(target, '**:white_check_mark: Volume set to %d**' % volume)
                     
         
@@ -1514,6 +1561,8 @@ class Player(object):
 
 
     async def parse_boolean(self, value, target):
+        if isinstance(value, bool):
+            return value
         value = value.lower()
         if value in ('y', 'yes', 't', 'true', 'on'):
             return True
@@ -1525,9 +1574,10 @@ class Player(object):
 
 
     async def parse_integer(self, value, target, min=None, max=None):
-        if len(value) > MAX_INPUT_LENGTH:
-            await self.send(target, '**:x: integer `%s` is too large to parse**' % position)
-            return
+        if not isinstance(value, int):
+            if len(value) > MAX_INPUT_LENGTH:
+                await self.send(target, '**:x: integer `%s` is too large to parse**' % position)
+                return
         try:
             value = int(value)
         except ValueError:
@@ -1571,31 +1621,33 @@ class Player(object):
 
     async def notify_user_join(self, member):
         # Called when a user joins a voice channel that this bot is in
-        if self.idle_task:
-            self.idle_task.cancel()
-            self.idle_task = None
-        if self.empty_paused:
-            self.voice_client.resume()
-            self.last_started_playing += (time.time() - self.last_paused)
-            self.empty_paused = False
-            self.last_paused = None
+        async with self.mutex:
+            if self.idle_task:
+                self.idle_task.cancel()
+                self.idle_task = None
+            if self.empty_paused:
+                self.voice_client.resume()
+                self.last_started_playing += (time.time() - self.last_paused)
+                self.empty_paused = False
+                self.last_paused = None
 
 
     async def notify_user_leave(self, member):
         # Called when a user leaves a voice channel that this bot is in
-        if self.voice_channel is not None:
-            if len(self.voice_channel.members) == 1:
-                self.votes = []
-                if not self.alwaysplaying:
-                    self.idle_task = asyncio.create_task(self.idle_timer_func())
-                    if self.voice_client.is_playing() and not self.voice_client.is_paused():
-                        self.empty_paused = True
-                        self.last_paused = time.time()
-                        self.voice_client.pause()
-            elif member in self.votes:
-                self.votes.remove(member)
-            elif self.votes and (len(self.votes) >= int(.75 * (len(self.voice_channel.members) - 1))):
-                await self.skip(self.text_channel)
+        async with self.mutex:
+            if self.voice_channel is not None:
+                if len(self.voice_channel.members) == 1:
+                    self.votes = []
+                    if not self.alwaysplaying:
+                        self.idle_task = asyncio.create_task(self.idle_timer_func())
+                        if self.voice_client.is_playing() and not self.voice_client.is_paused():
+                            self.empty_paused = True
+                            self.last_paused = time.time()
+                            self.voice_client.pause()
+                elif member in self.votes:
+                    self.votes.remove(member)
+                elif self.votes and (len(self.votes) >= int(.75 * (len(self.voice_channel.members) - 1))):
+                    await self.skip(self.text_channel)
 
 
     async def idle_timer_func(self):
@@ -1773,7 +1825,7 @@ class Player(object):
             setting, value = [i.strip() for i in line.split(':', 1)]
             setting = setting.lower()
             # Boolean settings
-            if setting in ('announcesongs', 'preventduplicates', 'djonly', 'djonlyplaylists', 'alwaysplaying'):
+            if setting in ('announcesongs', 'preventduplicates', 'djonly', 'djplaylists', 'alwaysplaying'):
                 try:
                     setattr(self, setting, bool(int(value)))
                 except ValueError:
@@ -1822,14 +1874,14 @@ MAXQUEUELENGTH    : %d
 MAXUSERSONGS      : %d
 PREVENTDUPLICATES : %d
 DEFAULTVOLUME     : %d
-DJONLYPLAYLISTS   : %d
+DJPLAYLISTS       : %d
 DJONLY            : %d
 DJROLE            : %s
 ALWAYSPLAYING     : %d''' % \
 (self.prefix, ','.join([str(channel.id) for channel in self.blacklist]),
  self.autoplay or '', self.announcesongs, self.maxqueuelength or 0,
  self.maxusersongs or 0, self.preventduplicates, self.defaultvolume * 200,
- self.djonlyplaylists, self.djonly, self.djrole, self.alwaysplaying)
+ self.djplaylists, self.djonly, self.djrole, self.alwaysplaying)
         try:
             with open(filename, 'w') as o:
                 o.write(settings)
