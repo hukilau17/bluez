@@ -1,8 +1,7 @@
 # Bluez bot implementation
-# Matthew Kroesche
 
-from bluez.bot import Bot
+import os
+from bluez.bot import bot
 
 if __name__ == '__main__':
-    client = Bot()
-    client.run()
+    bot.run(os.getenv('BLUEZ_TOKEN'))
