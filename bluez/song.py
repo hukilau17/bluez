@@ -2,6 +2,7 @@
 
 import discord
 import youtube_dl
+#import yt_dlp as youtube_dl
 import tinytag
 import httpio
 import asyncio
@@ -20,6 +21,15 @@ TREBLE_ATTENUATE_DB = 2
 METADATA_TIMEOUT = 30
 
 BLUEZ_DEBUG = bool(int(os.getenv('BLUEZ_DEBUG', '0')))
+
+
+# Search keys
+SEARCH_INFO = {
+    # name of streaming service -> (youtube-dl search key, appropriate emoji)
+    # more of these may be added in the future
+    'YouTube'   : ('ytsearch', ':arrow_forward:'),
+    'SoundCloud': ('scsearch', ':cloud:'        ),
+    }
 
 
 PLAYLIST_HACK = True # implement at your own risk
@@ -77,9 +87,13 @@ class Song(object):
         self.length = self.adjusted_length = self.data.get('duration') or 0
         self.thumbnail = self.data.get('thumbnail')
         self.channel = self.data.get('channel', 'None')
+        self.channel_url = self.data.get('channel_url')
         self.artist = self.data.get('artist')
         self.track = self.data.get('track')
         self.asr = self.data.get('asr')
+        self.start = self.data.get('start_time')
+        self.end = self.data.get('end_time')
+        self.trim()
         if 'extra_info_hack' in self.data:
             self.url = None
             if self.data.get('ie_key') == 'Youtube':
@@ -90,7 +104,17 @@ class Song(object):
             self.url = self.data['url']
             self.link = self.data.get('webpage_url', getattr(self, 'link', None))
 
-        
+
+
+    def trim(self):
+        # trim a song's length if its start and end are specified
+        if self.length and ((self.start is not None) or (self.end is not None)):
+            if self.end is not None:
+                self.length = self.end - (self.start or 0)
+            else:
+                self.length -= self.start
+            self.adjusted_length = self.length / self.tempo
+            
         
         
     def process(self):
@@ -124,6 +148,7 @@ class Song(object):
         # If successful, set information from this tag object
         if not self.length:
             self.length = float(tag.duration)
+            self.trim()
             self.adjusted_length = self.length / self.tempo
         if self.artist is None:
             self.artist = tag.artist
@@ -187,8 +212,12 @@ class Song(object):
             pitch *= NIGHTCORE_PITCH
             pitch = min(pitch, 3)
         self.adjusted_length = self.length / self.tempo
+        if self.start is not None:
+            seek_pos += self.start
         if seek_pos != 0:
             before_options += ' -ss %s' % format_time(seek_pos * self.tempo)
+        if self.end is not None:
+            before_options += ' -to %s' % format_time(self.end * self.tempo)
         af = []
         # change the bass and treble gains if bass-boosting is turned on
         if bass != 1:
@@ -293,15 +322,14 @@ async def songs_from_url(url, user):
 
 
 
-async def songs_from_search(query, user, maxn, soundcloud=False):
+async def songs_from_search(query, user, maxn, search_key):
     # find and return songs matching the given search query
-    source = ('sc' if soundcloud else 'yt')
-    data = (await extract_info('%ssearch%d:%s' % (source, maxn, query)))
+    data = (await extract_info('%s%d:%s' % (search_key, maxn, query)))
     entries = data['entries']
     songs = [Song(entry, user) for entry in entries]
-    if maxn == 1:
+    if songs and (maxn == 1):
         songs[0].process()
-    return songs
+    return songs[:maxn] # apparently SoundCloud can give you multiple songs even when you only ask for one...
 
 
 
