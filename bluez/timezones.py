@@ -10,7 +10,7 @@ try:
 
     def get_timezone(name):
         for key in zoneinfo.available_timezones():
-            if key.endswith(name.replace('_', ' ')):
+            if key.endswith(name.replace(' ', '_')):
                 return zoneinfo.ZoneInfo(key)
         logging.warning('get_timezone() unable to find timezone matching "%s"; returning None' % name)
         return None
