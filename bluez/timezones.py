@@ -6,7 +6,7 @@ try:
     import logging
 
 
-    TIMEZONES = tuple(sorted(set([i.split('/')[-1] for i in zoneinfo.available_timezones() if i != 'localtime'])))
+    TIMEZONES = tuple(sorted(set([i.split('/')[-1].replace('_', ' ') for i in zoneinfo.available_timezones() if i != 'localtime'])))
 
     def get_timezone(name):
         for key in zoneinfo.available_timezones():

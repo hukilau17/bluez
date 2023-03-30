@@ -30,11 +30,6 @@ if BLUEZ_DEBUG:
     logging.basicConfig(level=logging.DEBUG)
 
 
-# Limits on how big bot input can get
-MAX_TIME_VALUE = 1000000000000
-MAX_INPUT_LENGTH = 30
-
-
 
 # Initialize the lyricsgenius interface
 try:

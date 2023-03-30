@@ -301,7 +301,7 @@ class Player(object):
                     self.voice_client.play(source, after=self._play_next_callback)
                     now = time.time()
                     self.last_started_playing = now - (self.seek_pos or 0)
-                    if self.last_paused:
+                    if self.last_paused is not None:
                         # The bot will remember if it was paused if you skip, seek, or mess with audio effects.
                         # The only exception is that if you skip past the end of the queue and the bot become idle,
                         # it forgets it was paused. (Otherwise the behavior might be confusing.)
@@ -558,6 +558,8 @@ class Player(object):
             else:
                 time = format_time(time)
                 position = str(position + 1)
+        if self.last_paused is not None:
+            time += ' (paused)'
         if len(songs) > 1:
             # This is a playlist
             embed = discord.Embed(description=format_link(songs))

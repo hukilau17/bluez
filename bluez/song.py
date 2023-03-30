@@ -2,7 +2,6 @@
 
 import discord
 import youtube_dl
-#import yt_dlp as youtube_dl
 import tinytag
 import httpio
 import asyncio
@@ -19,6 +18,9 @@ SLOWED_TEMPO = 0.7
 BASS_BOOST_DB = 5
 TREBLE_ATTENUATE_DB = 2
 METADATA_TIMEOUT = 30
+
+MAX_TIME_VALUE = 36000000 # ffmpeg does not allow timestamps of 10000 hours or more
+MAX_INPUT_LENGTH = 30
 
 BLUEZ_DEBUG = bool(int(os.getenv('BLUEZ_DEBUG', '0')))
 
@@ -93,6 +95,21 @@ class Song(object):
         self.asr = self.data.get('asr')
         self.start = self.data.get('start_time')
         self.end = self.data.get('end_time')
+        # sanitize start and end since it's possible to set them maliciously
+        if self.start is not None:
+            if self.start < 0:
+                self.start = None
+            elif self.start >= MAX_TIME_VALUE:
+                self.error = Exception('start time too big, no audio data')
+        if self.end is not None:
+            if self.end < 0:
+                self.end = 0
+            elif self.end >= MAX_TIME_VALUE:
+                self.end = None
+            elif (self.start is not None) and (self.end < self.start):
+                self.start = self.end
+                self.error = Exception('start time later than end time, no audio data')
+        # trim the length to be between the start and end
         self.trim()
         if 'extra_info_hack' in self.data:
             self.url = None
@@ -110,9 +127,13 @@ class Song(object):
         # trim a song's length if its start and end are specified
         if self.length and ((self.start is not None) or (self.end is not None)):
             if self.end is not None:
-                self.length = self.end - (self.start or 0)
+                self.length = min(self.end, self.length) - (self.start or 0)
             else:
                 self.length -= self.start
+            if self.length <= 0:
+                self.length = 0
+                if self.error is None:
+                    self.error = Exception('start time later than end of song, no audio data')
             self.adjusted_length = self.length / self.tempo
             
         
@@ -171,7 +192,7 @@ class Song(object):
 
     def fetch_metadata(self):
         # Begin loading the metadata asynchronously
-        if not (self.length or hasattr(self, 'metadata_task')):
+        if not (self.length or self.error or hasattr(self, 'metadata_task')):
             self.metadata_task = asyncio.create_task(self.get_metadata_with_timeout(METADATA_TIMEOUT))
         
         
