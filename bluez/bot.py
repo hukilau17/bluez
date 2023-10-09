@@ -13,6 +13,7 @@ import logging
 
 from bluez.player import *
 from bluez.song import *
+from bluez.views import *
 from bluez.timezones import *
 from bluez.util import *
 
@@ -268,20 +269,12 @@ async def app_summon(interaction):
 
 
 
+# general play command
 
-@bot.tree.command(name='play')
-@app_commands.describe(
-    query='A link or search query describing the song or playlist to queue up',
-    where='Whether to place the song or playlist at the bottom, top, or random spot in the queue,\
-or to skip the current song and play it immediately',
-    source='Where to look up search queries (YouTube, SoundCloud, etc.)',
-    browse='Whether to pop up a menu for the user to select a song from \
-rather than just queueing the top match')
-async def app_play(ctx, query: str,
-                   where: typing.Literal['Bottom', 'Top', 'Now', 'Shuffle'] = 'Bottom',
-                   source: typing.Literal[tuple(SEARCH_INFO)] = 'YouTube',
-                   browse: bool = False):
-    '''Play a song with the given name or url'''
+async def play(ctx, query: str,
+               where: typing.Literal['Bottom', 'Top', 'Now', 'Shuffle'] = 'Bottom',
+               source: typing.Literal[tuple(SEARCH_INFO)] = tuple(SEARCH_INFO)[0],
+               priority: typing.Optional[bool] = None, browse: bool = False):
     if isinstance(ctx, discord.Interaction):
         ctx = (await bot.get_context(ctx))
     player = (await get_player(ctx))
@@ -290,40 +283,69 @@ async def app_play(ctx, query: str,
         # if they are trying to queue it ahead of other people's songs or skip
         # other people's songs
         ensure = player.ensure_joined
+        playlist = SEARCH_INFO[source][2]
         if (where == 'Top') and player.queue:
             ensure = player.ensure_dj
         elif (where == 'Now') and (player.queue or player.now_playing):
             ensure = player.ensure_dj
+        elif playlist and player.djplaylists:
+            ensure = player.ensure_dj
         if (await ensure(ctx)):
             if browse:
-                songs = (await player.songs_from_search(ctx, query, source))
+                if priority is None:
+                    priority = (not playlist)
+                if playlist:
+                    songs, where, priority = (await player.playlist_from_search(ctx, query, where, priority, source))
+                else:
+                    songs, where, priority = (await player.songs_from_search(ctx, query, where, priority, source))
             else:
-                songs = (await player.songs_from_query(ctx, query, source))
+                if playlist:
+                    songs = (await player.playlist_from_query(ctx, query, source))
+                else:
+                    songs = (await player.songs_from_query(ctx, query, source))
             if songs:
                 if where == 'Bottom':
-                    await player.play(ctx, songs)
+                    if priority is None:
+                        priority = (len(songs) == 1)
+                    await player.play(ctx, songs, priority)
                 elif where == 'Top':
                     await player.playtop(ctx, songs)
                 elif where == 'Now':
                     await player.playskip(ctx, songs)
                 elif where == 'Shuffle':
-                    await player.playshuffle(ctx, songs)
-        
+                    if priority is None:
+                        priority = False
+                    await player.playshuffle(ctx, songs, priority)
+
+
+
     
                        
 # shortcuts for play
 
+@bot.tree.command(name='play')
+@app_commands.describe(
+    query='A link or search query describing the song or playlist to queue up',
+    where='Whether to place the song or playlist at the bottom, top, or random spot in the queue, \
+or to skip the current song and play it immediately',
+    source='Where to look up search queries (YouTube, SoundCloud, etc.)',
+    priority='Whether to put the selected songs ahead of or behind the priority threshold')
+async def app_play(ctx, query: str,
+                   where: typing.Literal['Bottom', 'Top', 'Now', 'Shuffle'] = 'Bottom',
+                   source: typing.Literal[tuple(SEARCH_INFO)] = tuple(SEARCH_INFO)[0],
+                   priority: typing.Optional[bool] = None):
+    '''Play a song with the given name or url'''
+    await play(ctx, query, where, source, priority, browse=False)
+        
+
 @bot.tree.command(name='search')
 @app_commands.describe(
     query='A search query describing the song or playlist to queue up',
-    where='Whether to place the song or playlist at the bottom, top, or random spot in the queue,\
-or to skip the current song and play it immediately',
     source='Where to look up search queries (YouTube, SoundCloud, etc.)')
 async def app_search(ctx, query: str,
-                     where: typing.Literal['Bottom', 'Top', 'Now', 'Shuffle'] = 'Bottom',
-                     source: typing.Literal[tuple(SEARCH_INFO)] = 'YouTube'):
+                     source: typing.Literal[tuple(SEARCH_INFO)] = tuple(SEARCH_INFO)[0]):
     '''Search for a song using the query, and return the top 10 results'''
-    await app_play.callback(ctx, query, where, source, True)
+    await play(ctx, query, source=source, browse=True)
 
 bot.tree.command(name='find')(app_search.callback)
 
@@ -332,36 +354,43 @@ bot.tree.command(name='find')(app_search.callback)
 @bot.command(name='play', aliases=['p'])
 async def command_play(ctx, *, query: str):
     '''Play a song with the given name or url'''
-    await app_play.callback(ctx, query)
+    await play(ctx, query)
 
 
 @bot.hybrid_command(name='playtop', aliases=['pt', 'ptop'])
 @app_commands.describe(query='A link or search query describing the song or playlist to queue up')
 async def command_playtop(ctx, *, query: str):
     '''Add a song with the given name/url to the top of the queue'''
-    await app_play.callback(ctx, query, where='Top')
+    await play(ctx, query, where='Top')
 
 
 @bot.hybrid_command(name='playskip', aliases=['ps', 'pskip', 'pn', 'playnow'])
 @app_commands.describe(query='A link or search query describing the song or playlist to queue up')
 async def command_playskip(ctx, *, query: str):
     '''Skip the current song and play the song with the given name/url'''
-    await app_play.callback(ctx, query, where='Now')
+    await play(ctx, query, where='Now')
 
 bot.tree.command(name='playnow')(command_playskip.callback)
+
+
+@bot.hybrid_command(name='playlist', aliases=['pl', 'plist'])
+@app_commands.describe(query='A search query describing the playlist to queue up')
+async def command_playlist(ctx, *, query: str):
+    '''Find and queue up a playlist matching the given search query'''
+    await play(ctx, query, source='YouTube Playlist')
 
 
 @bot.command(name='search', aliases=['find'])
 async def command_search(ctx, *, query: str):
     '''Search for a song using the query, and return the top 10 results'''
-    await app_play.callback(ctx, query, browse=True)
+    await play(ctx, query, browse=True)
 
 
 @bot.hybrid_command(name='soundcloud', aliases=['sc'])
 @app_commands.describe(query='A link or search query describing the song or playlist to queue up')
 async def command_soundcloud(ctx, *, query: str):
     '''Play a song from SoundCloud with the given name/url'''
-    await app_play.callback(ctx, query, source='SoundCloud')
+    await play(ctx, query, source='SoundCloud')
             
         
 
@@ -589,7 +618,7 @@ async def command_lyrics(ctx, *, query: typing.Optional[str] = None):
             embed.set_thumbnail(url=song.song_art_image_thumbnail_url)
             embed.set_footer(text='Requested by %s' % format_user(ctx.author), icon_url=ctx.author.avatar.url)
             embeds.append(embed)
-        await Player.post_multipage_embed(ctx, embeds)
+        await post_multipage_embed(ctx, embeds)
     else:
         await ctx.send('**:x: There were no results matching the query**')
 
@@ -631,7 +660,7 @@ async def command_history(ctx, *, timezone: typing.Optional[str] = None):
     if player is not None:
         if (await player.ensure_history(ctx)):
             if timezone:
-                if timezone in TIMEZONES:
+                if timezone.lower() in TIMEZONES_LOWER:
                     timezone = get_timezone(timezone)
                 else:
                     await ctx.send('**:x: Invalid timezone `%s`**' % timezone)
@@ -643,6 +672,8 @@ async def command_history(ctx, *, timezone: typing.Optional[str] = None):
 @command_history.autocomplete('timezone')
 async def history_autocomplete(interaction, current):
     # return list of choices matching what the user has typed so far in the timezone for the history slash command
+    if not current:
+        return [] # don't return any choices if they haven't started to type anything yet
     matching = [timezone for timezone in TIMEZONES if current.lower() in timezone.lower()][:25]
     return [app_commands.Choice(name=timezone, value=timezone) for timezone in matching]
 
@@ -691,13 +722,31 @@ async def command_skipto(ctx, position: int):
             await player.skipto(ctx, position)
     
 
-@bot.hybrid_command(name='shuffle', aliases=['random'])
-async def command_shuffle(ctx):
+@bot.tree.command(name='shuffle')
+@app_commands.describe(query='A link or search query describing the song or playlist to queue up',
+                       source='Where to look up search queries (YouTube, SoundCloud, etc.)',
+                       priority='Whether to put the shuffled queue ahead of or behind the priority threshold')
+async def app_shuffle(ctx, query: typing.Optional[str] = None,
+                      source: typing.Literal[tuple(SEARCH_INFO)] = tuple(SEARCH_INFO)[0],
+                      priority: bool = False):
     '''Shuffle the entire queue'''
-    player = (await get_player(ctx))
-    if player is not None:
-        if (await player.ensure_dj(ctx)) and (await player.ensure_queue(ctx)):
-            await player.shuffle(ctx)
+    if query is not None:
+        # this is an alias for /play if a query is given
+        await play(ctx, query, 'Shuffle', source, priority)
+    else:
+        # otherwise just shuffle the queue   
+        if isinstance(ctx, discord.Interaction):
+            ctx = (await bot.get_context(ctx))
+        player = (await get_player(ctx))
+        if player is not None:
+            if (await player.ensure_dj(ctx)) and (await player.ensure_queue(ctx)):
+                await player.shuffle(ctx, priority)
+
+
+@bot.command(name='shuffle', aliases=['random'])
+async def command_shuffle(ctx, *, query: typing.Optional[str] = None):
+    '''Shuffle the entire queue'''
+    await app_shuffle.callback(ctx, query)
 
 
 
@@ -1100,7 +1149,7 @@ async def command_aliases(ctx):
         embed.description = '\n'.join(page) + ('\n\nPage %d/%d' % (i+1, npages))
         embed.set_footer(text='Bluez, ready for your command!', icon_url=bot.user.avatar.url)
         embeds.append(embed)
-    await Player.post_multipage_embed(ctx, embeds)
+    await post_multipage_embed(ctx, embeds)
 
 
 @bot.hybrid_command(name='help', aliases=['commands'])
@@ -1124,7 +1173,7 @@ async def command_help(ctx):
         embed.description = '\n\n'.join(page) + ('\n\nPage %d/%d' % (i+1, npages))
         embed.set_footer(text='Bluez, ready for your command!', icon_url=bot.user.avatar.url)
         embeds.append(embed)
-    await Player.post_multipage_embed(ctx, embeds)
+    await post_multipage_embed(ctx, embeds)
 
 
 

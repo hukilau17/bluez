@@ -1,6 +1,7 @@
 # Miscellaneous utilities
 
 import sys
+import re
 import asyncio
 import logging
 import traceback
@@ -16,7 +17,7 @@ def format_time(time):
 
 
 def format_user(user):
-    str = '%s#%s' % (user.name, user.discriminator)
+    str = user.name
     if getattr(user, 'nick', None):
         str = '%s (%s)' % (user.nick, str)
     return str
@@ -27,6 +28,11 @@ def format_link(song):
         return '[%s](%s)' % (song.name, song.link)
     else:
         return song.name
+
+
+def is_url(string):
+    # return True if this string appears to be a valid website URL
+    return bool(re.match(r'(https:|http:|www\.)\S*', string))
 
 
 def log_exception(error):

@@ -70,6 +70,7 @@ class Player(object):
         self.voice_client = None
         self.now_playing = None
         self.queue = collections.deque()
+        self.queue_end = 0
         self.looping = False
         self.queue_looping = False
         self.votes = []
@@ -79,7 +80,6 @@ class Player(object):
         self.idle_task = None
         self.last_started_playing = None
         self.last_paused = None
-        self.searching_channels = []
         self.seek_pos = None
         self.stderr = tempfile.TemporaryFile()
         self.reset_effects()
@@ -245,6 +245,7 @@ class Player(object):
             if self.voice_client is not None:
                 # Check for an error with the previous song
                 retrying = False
+                errmsg = None
                 if self.now_playing:
                     error = (error or get_error(self.stderr))
                     if error:
@@ -261,8 +262,10 @@ class Player(object):
                             errmsg = (await self.text_channel.send('**:x: Error playing `%s`: `%s`**' % (self.now_playing.name, error)))
                 # Figure out what song to play next
                 if (self.seek_pos is None) and not retrying:
-                    if self.looping and (self.now_playing is not None) and not (self.skip_forward or self.skip_backward):
+                    if self.looping and (self.now_playing is not None) and not (self.skip_forward or self.skip_backward or errmsg):
                         # play the same song again
+                        # if either the user skipped (using !skip, !forceskip, !back, etc.) or an error happened when playing the song,
+                        # do not loop this song anymore and move on to the next one.
                         pass
                     elif self.queue and not self.skip_backward:
                         # play the next song in the queue
@@ -270,11 +273,16 @@ class Player(object):
                         if self.queue_looping:
                             # put the just-finished song on the end of the queue
                             self.queue.append(self.now_playing)
+                        if (self.queue_end > 0) and not ((self.queue_end == len(self.queue)) and self.queue_looping):
+                            self.queue_end -= 1
                         self.skip_forward = False
                     elif (len(self.history) > 1) and self.skip_backward:
                         # play the previous song in the history
-                        self.queue.appendleft(self.now_playing)
-                        self.history.pop()
+                        if self.now_playing:
+                            # put the currently playing song, if any, back onto the queue
+                            self.queue.appendleft(self.now_playing)
+                            self.queue_end += 1
+                            self.history.pop()
                         self.now_playing, timestamp = self.history.pop()
                         self.skip_backward = False
                     else:
@@ -336,11 +344,11 @@ class Player(object):
         # Does the same thing as play_next() if there's not
         # currently a song playing.
         if self.voice_client is not None:
+            await ctx.send('***:%s: Skipped :thumbsup:***' % ('rewind' if backward else 'fast_forward'))
             self.skip_forward = forward
             self.skip_backward = backward
             if self.voice_client.is_playing() or self.voice_client.is_paused():
                 self.voice_client.stop()
-                await ctx.send('***:%s: Skipped :thumbsup:***' % ('rewind' if backward else 'fast_forward'))
             else:
                 await self.play_next()
 
@@ -377,7 +385,8 @@ class Player(object):
 
     def should_retry(self, errmsg):
         # Determine from the text of an error message if we should reload the song and try again
-        return 'Server returned 403 Forbidden (access denied)' in errmsg # try again for this stupid bug
+        return False
+        #return 'Server returned 403 Forbidden (access denied)' in errmsg # try again for this stupid bug
 
 
     def should_ignore(self, errmsg):
@@ -398,44 +407,6 @@ class Player(object):
 
 
     ##### Status message methods #####
-
-
-    @staticmethod
-    async def post_multipage_embed(ctx, embeds, start_index=0):
-        if not embeds:
-            await ctx.send('**:warning: Empty data**')
-            return
-        start_index = max(min(start_index, len(embeds)-1), 0)
-        message = (await ctx.send(embed=embeds[start_index]))
-        if len(embeds) > 1:
-            current_page = start_index
-            await message.add_reaction('\u25c0')
-            await message.add_reaction('\u25b6')
-            # Enter event loop to wait a certain amount of time (30 seconds) for the user to scroll through the list
-            def check(reaction, user):
-                return (reaction.message.id == message.id) and (reaction.emoji in ('\u25c0', '\u25b6')) and (user != ctx.bot.user)
-            while True:
-                try:
-                    reaction, user = (await ctx.bot.wait_for('reaction_add', timeout=30, check=check))
-                except asyncio.TimeoutError:
-                    if ctx.guild is not None:
-                        # can't remove reactions in DMs
-                        await message.clear_reaction('\u25c0')
-                        await message.clear_reaction('\u25b6')
-                    break
-                else:
-                    # Remove the reaction and advance as appropriate
-                    if ctx.guild is not None:
-                        # can't remove reactions in DMs
-                        await reaction.remove(user)
-                    if reaction.emoji == '\u25c0': # page backward
-                        if current_page > 0:
-                            current_page -= 1
-                            await message.edit(embed = embeds[current_page])
-                    else: # page forward
-                        if current_page < len(embeds) - 1:
-                            current_page += 1
-                            await message.edit(embed = embeds[current_page])
 
 
 
@@ -485,6 +456,8 @@ class Player(object):
                                     format_user(self.now_playing.user))
                 description += '__Up Next:__\n'
             for j, song in enumerate(tuple(self.queue)[10*i : 10*(i+1)], 10*i+1):
+                if j == self.queue_end + 1:
+                    description += '\u25ac' * 20 + '\n\n'
                 description += '`%d.` %s | `%s Requested by %s`\n\n' % \
                                (j, format_link(song), format_time(song.length / self.get_adjusted_tempo()),
                                 format_user(song.user))
@@ -497,7 +470,7 @@ class Player(object):
             embed.set_footer(text=footer,
                              icon_url=ctx.author.avatar.url)
             embeds.append(embed)
-        await self.post_multipage_embed(ctx, embeds, start_index)
+        await post_multipage_embed(ctx, embeds, start_index)
 
 
 
@@ -524,7 +497,7 @@ class Player(object):
                              icon_url=ctx.author.avatar.url)
             embeds.append(embed)
         embeds.reverse()
-        await self.post_multipage_embed(ctx, embeds, npages-1)
+        await post_multipage_embed(ctx, embeds, npages-1)
 
 
 
@@ -596,74 +569,91 @@ class Player(object):
     ##### Methods to get songs matching a link or query #####
 
 
-
-    async def songs_from_query(self, ctx, query, source='YouTube'):
-        # Return a list of Song objects matching a query,
-        # which can be either a URL or a search term
-        if is_url(query):
-            try:
-                songs = (await songs_from_url(query, ctx.author))
-            except Exception as e:
-                songs = []
-            if not songs:
-                await ctx.send('**:x: Error playing songs from `%s`: `%s`**' % (query, e))
+    async def songs_from_url(self, ctx, query):
+        # Return a list or Playlist of Song objects matching a URL
+        await ctx.send('**:link: Playing songs from `%s`**' % query)
+        try:
+            songs = (await songs_from_url(query, ctx.author))
+        except Exception as e:
+            await ctx.send('**:x: Error playing songs from `%s`: `%s`**' % (query, e))
+            return []
         else:
-            search_key, emoji = SEARCH_INFO[source]
-            await ctx.send('**%s Searching :mag: `%s`**' % (emoji, query))
-            songs = (await songs_from_search(query, ctx.author, 1, search_key))
             if not songs:
-                await ctx.send('**:x: There were no results matching the query**')
+                await ctx.send('**:x: No songs found at URL `%s`**' % query)
+                return []
         return (await self.trim_songs(ctx, songs))
 
 
 
-
-    async def songs_from_search(self, ctx, query, source='YouTube'):
-        # Find the top 10 matches to a query, and prompt the user to choose one of them
-        if ctx.channel in self.searching_channels:
-            await ctx.send('**:warning: Search is already running in this channel, type `cancel` to exit**')
-            return
-        search_key, emoji = SEARCH_INFO[source]
+    async def songs_from_query(self, ctx, query, source='YouTube Video'):
+        # Return a list of Song objects matching a query,
+        # which can be either a URL or a search term
+        if is_url(query):
+            return (await self.songs_from_url(ctx, query))
+        search_key, emoji = SEARCH_INFO[source][:2]
         await ctx.send('**%s Searching :mag: `%s`**' % (emoji, query))
-        songs = (await songs_from_search(query, ctx.author, 10, search_key))
-        if songs:
-            # Print out an embed of the songs
-            description = '\n\n'.join(['`%d.` %s **[%s]**' % (i+1, format_link(song),
-                                                              format_time(song.length / self.get_adjusted_tempo())) \
-                                       for i, song in enumerate(songs)])
-            description += '\n\n\n\n**Type a number to make a choice, Type `cancel` to exit**'
-            embed = discord.Embed(description=description)
-            embed.set_author(name=(ctx.author.nick or ctx.author.name), icon_url=ctx.author.avatar.url)
-            embed_message = (await ctx.send(embed=embed))
-        else:
-            # No results
-            await ctx.send('**:x: There were no results matching the query**')
-            return
-        # Wait for the user who made the search query to reply
-        def check(m):
-            if (m.channel == ctx.channel) and (m.author == ctx.author):
-                return m.content.strip().lower() in ('cancel',) + tuple(map(str, range(1, len(songs)+1)))
-        self.searching_channels.append(ctx.channel)
         try:
-            result = (await self.bot.wait_for('message', check=check, timeout=30))
-        except asyncio.TimeoutError:
-            await ctx.send('**:no_entry_sign: Timeout**')
-            result = None
-        self.searching_channels.remove(ctx.channel)
-        await embed_message.delete()
-        if result is None:
-            return
-        m = result.content.strip().lower()
-        if m == 'cancel':
-            await ctx.send(':white_check_mark:')
-            return
-        song = songs[int(m) - 1]
-        if not (await self.trim_songs(ctx, [song])):
-            return # the user can't queue this song for some reason
-        song.process()
-        return [song]
-    
+            songs = (await songs_from_search(query, ctx.author, 0, 1, search_key))
+        except Exception as e:
+            await ctx.send('**:x: Error searching %s for `%s`: `%s`**' % (source, query, e))
+            return []
+        if not songs:
+            await ctx.send('**:x: There were no results matching the query**')
+            return []
+        return (await self.trim_songs(ctx, songs))
 
+
+
+    async def playlist_from_query(self, ctx, query, source='YouTube Playlist'):
+        # Search YouTube for a playlist matching a query
+        # (source is ignored for now)
+        if is_url(query):
+            return (await self.songs_from_url(ctx, query))
+        await ctx.send('**:arrow_forward: Searching :mag: `%s`**' % query)
+        try:
+            playlists = (await playlists_from_search(query, ctx.author, 0, 1))
+        except Exception as e:
+            await ctx.send('**:x: Error searching YouTube for playlist `%s`: `%s`**' % (query, e))
+            return []
+        if not playlists:
+            await ctx.send('**:x: There were no results matching the query**')
+            return []
+        return (await self.trim_songs(ctx, playlists[0]))
+        
+
+
+    async def songs_from_search(self, ctx, query, where, priority, source='YouTube Video'):
+        # Find the top song matches to a query, and prompt the user to choose one of them
+        # return a 3-tuple (songs, where, priority)
+        search_key, emoji = SEARCH_INFO[source][:2]
+        view = SearchView(ctx, query, where, priority, self.is_dj(ctx.author),
+                          search_key, tempo=self.get_adjusted_tempo())
+        await view.open(emoji)
+        await view.wait()
+        if view.selection is None:
+            return [], 'Bottom', False
+        song = view.selection
+        if not (await self.trim_songs(ctx, [song])):
+            return [], 'Bottom', False # the user can't queue this song for some reason
+        await song.process()
+        return [song], view.where, view.priority
+
+
+
+    async def playlist_from_search(self, ctx, query, where, priority, source='YouTube Playlist'):
+        # Find the top playlist matches to a query, and prompt the user to choose one of them
+        # return a 3-tuple (playlist, where, priority)
+        # (source is ignored for now)
+        view = SearchView(ctx, query, where, priority, self.is_dj(ctx.author), playlists=True)
+        await view.open()
+        await view.wait()
+        if view.selection is None:
+            return [], 'Bottom', False
+        playlist = view.selection
+        await playlist.process()
+        playlist = (await self.trim_songs(ctx, playlist))
+        return playlist, view.where, view.priority
+    
 
 
 
@@ -671,8 +661,7 @@ class Player(object):
         # This method takes a list of songs, and removes any that are not allowed to be there due to bot settings.
         # Unless at least one bot setting has been changed from its default value, this method will return the
         # whole list of songs and filter nothing out.
-        name = getattr(songs, 'name', None)
-        link = getattr(songs, 'link', None)
+        songs = songs.copy()
         if not songs:
             # nothing to do
             return []
@@ -682,12 +671,16 @@ class Player(object):
             return []
         # If self.preventduplicates is True, this removes any songs that are already on the queue
         if self.preventduplicates:
-            songs = list(songs)
+            removed = []
             for i, song in enumerate(songs):
                 if (song in self.queue) or (song in songs[:i]):
                     songs.remove(song)
-                    if not anonymous:
-                        await ctx.send('**:x: `%s` has already been added to the queue**' % song.name)
+                    removed.append(song)
+            if removed and not anonymous:
+                if len(removed) == 1:
+                    await ctx.send('**:x: `%s` has already been added to the queue**' % removed[0].name)
+                else:
+                    await ctx.send('**:x: %d songs have been removed from this playlist since they are already on the queue**' % len(removed))
         # If self.maxqueuelength is not None, this removes any songs that exceed the length
         if self.maxqueuelength > 0:
             if len(self.queue) >= self.maxqueuelength:
@@ -696,7 +689,7 @@ class Player(object):
                 return []
             elif len(self.queue) + len(songs) > self.maxqueuelength:
                 if not anonymous:
-                    songs = songs[:self.maxqueuelength - len(self.queue)]
+                    del songs[self.maxqueuelength - len(self.queue):]
                 await ctx.send('**:warning: Shortening playlist due to reaching the song queue limit**')
         # If self.maxusersongs is not None, this removes any songs queued by this user that exceed the limit
         if (self.maxusersongs > 0) and not anonymous:
@@ -705,14 +698,8 @@ class Player(object):
                 await ctx.send('**:x: Unable to queue song, you have reached the maximum songs you can have in the queue**')
                 return []
             elif nuser + len(songs) > self.maxusersongs:
-                songs = songs[:self.maxusersongs - nuser]
+                del songs[self.maxusersongs - nuser:]
                 await ctx.send('**:warning: Shortening playlist due to reaching the maximum songs you can have in the queue**')
-        # Make sure the name and url are preserved
-        if (name is not None) or (link is not None):
-            if not isinstance(songs, Playlist):
-                songs = Playlist(songs)
-                songs.name = name
-                songs.link = link
         return songs
 
     
@@ -723,11 +710,21 @@ class Player(object):
     ##### Playing commands #####
 
 
-    async def play(self, ctx, songs):
+    async def play(self, ctx, songs, priority=None):
         # Place the songs at the bottom of the queue
+        if priority is None:
+            priority = (len(songs) <= 1)
         async with self.mutex:
-            n = len(self.queue)
-            self.queue.extend(songs)
+            if priority:
+                n = self.queue_end
+                for song in songs[::-1]:
+                    self.queue.insert(n, song)
+                self.queue_end += len(songs)
+            else:
+                n = len(self.queue)
+                self.queue.extend(songs)
+                if self.queue_end < n:
+                    self.queue_end += len(songs)
             await self.enqueue_message(ctx, n, songs)
             await self.wake_up()
 
@@ -736,6 +733,7 @@ class Player(object):
         # Place the songs at the top of the queue
         async with self.mutex:
             self.queue.extendleft(songs[::-1])
+            self.queue_end += len(songs)
             await self.enqueue_message(ctx, 0, songs)
             await self.wake_up()
 
@@ -744,16 +742,18 @@ class Player(object):
         # Place the songs at the top of the queue and then skip to the next song
         async with self.mutex:
             self.queue.extendleft(songs[::-1])
+            self.queue_end += len(songs)
             await self.enqueue_message(ctx, 0, songs, now=True)
             await self.skip(ctx)
 
 
-    async def playshuffle(self, ctx, songs):
+    async def playshuffle(self, ctx, songs, priority=False):
         # Place the songs in the queue, then shuffle the queue
         async with self.mutex:
             now = not (self.now_playing or self.queue)
             self.queue.extend(songs)
             random.shuffle(self.queue)
+            self.queue_end = len(self.queue) if priority else 0
             await self.enqueue_message(ctx, 0, songs, now=now, shuffle=True)
             await self.wake_up()
 
@@ -844,6 +844,10 @@ class Player(object):
                         self.queue.append(song)
                 else:
                     break
+                if self.queue_end < position:
+                    self.queue_end = 0
+                elif not (self.queue_looping and (self.queue_end == len(self.queue))):
+                    self.queue_end -= position - 1
             await self.skip(ctx)
 
 
@@ -887,10 +891,11 @@ class Player(object):
     ##### Queue modification commands #####
 
 
-    async def shuffle(self, ctx):
+    async def shuffle(self, ctx, priority=False):
         # Shuffle the queue
         async with self.mutex:
             random.shuffle(self.queue)
+            self.queue_end = (len(self.queue) if priority else 0)
             await ctx.send('**:twisted_rightwards_arrows: Shuffled queue :ok_hand:**')
 
 
@@ -902,7 +907,15 @@ class Player(object):
             else:
                 song = self.queue[old - 1]
                 del self.queue[old - 1]
+                if new >= old:
+                    new += 1
                 self.queue.insert(new - 1, song)
+                if self.queue_end < new-1:
+                    # make sure all the songs up to the new index we inserted at are ahead of the priority marker
+                    self.queue_end = new-1
+                elif self.queue_end < old-1:
+                    # we took a song that was behind the priority marker and moved it ahead of it
+                    self.queue_end += 1
                 await ctx.send('**:white_check_mark: Moved `%s` to position %d in the queue**' % (song.name, new))
 
 
@@ -914,18 +927,26 @@ class Player(object):
             else:
                 song = self.queue[position - 1]
                 del self.queue[position - 1]
+                if position-1 < self.queue_end:
+                    self.queue_end -= 1
                 await ctx.send('**:white_check_mark: Removed `%s`**' % song.name)
 
 
     async def remove_range(self, ctx, start, end):
         # Remove a whole range of songs from the queue
         async with self.mutex:
+            if end is None:
+                end = len(self.queue)
             if not (1 <= start <= end <= len(self.queue)):
                 await ctx.send('**:x: Invalid position, should be between 1 and %d**' % len(self.queue))
             else:
                 removed = tuple(self.queue)[start-1 : end]
                 for song in removed:
                     self.queue.remove(song)
+                if end-1 < self.queue_end:
+                    self.queue_end -= (end - start + 1)
+                elif start-1 < self.queue_end:
+                    self.queue_end = start-1
                 await ctx.send('**:white_check_mark: Removed `%d` songs**' % len(removed))
 
 
@@ -934,12 +955,15 @@ class Player(object):
         async with self.mutex:
             if user is None:
                 self.queue.clear()
+                self.queue_end = 0
                 await ctx.send('***:boom: Cleared... :stop_button:***')
             else:
                 # only remove the songs queued up by this particular user
                 n = 0
                 for song in tuple(self.queue):
                     if song.user == user:
+                        if self.queue.index(song) < self.queue_end:
+                            self.queue_end -= 1
                         self.queue.remove(song)
                         n += 1
                 await ctx.send('**:thumbsup: %d song%s removed from the queue**' % (n, '' if n == 1 else 's'))
@@ -951,6 +975,8 @@ class Player(object):
             n = 0
             for song in tuple(self.queue):
                 if song.user not in self.voice_channel.members:
+                    if self.queue.index(song) < self.queue_end:
+                        self.queue_end -= 1
                     self.queue.remove(song)
                     n += 1
             await ctx.send('**:thumbsup: %d song%s removed from the queue**' % (n, '' if n == 1 else 's'))
@@ -963,6 +989,8 @@ class Player(object):
             n = 0
             for i, song in enumerate(t):
                 if song in t[:i]:
+                    if self.queue.index(song) < self.queue_end:
+                        self.queue_end -= 1
                     self.queue.remove(song)
                     n += 1
             if (n or not quiet):
@@ -1090,6 +1118,7 @@ class Player(object):
                     # if the queue is too full, go ahead and delete the excess songs now
                     n = len(self.queue) - length
                     self.queue = collections.deque(tuple(self.queue)[:length])
+                    self.queue_end = min(self.queue_end, len(self.queue))
                     await ctx.send('**:thumbsup: %d song%s removed from the end of the queue**' % (n, '' if n == 1 else 's'))
 
 
@@ -1115,6 +1144,8 @@ class Player(object):
                     for song in tuple(self.queue):
                         counter[song.user.id] += 1
                         if counter[song.user.id] > number:
+                            if self.queue.index(song) < self.queue_end:
+                                self.queue_end -= 1
                             self.queue.remove(song)
                             n += 1
                     if n:
@@ -1429,7 +1460,8 @@ class Player(object):
             with open(filename, 'r') as o:
                 settings = o.read()
         except IOError:
-            return # unable to find settings file; use defaults
+            logging.warning('error loading settings file; using defaults')
+            return
         for line in settings.splitlines():
             if ':' not in line:
                 continue
@@ -1498,6 +1530,6 @@ ALWAYSPLAYING     : %d''' % \
             with open(filename, 'w') as o:
                 o.write(settings)
         except IOError:
-            pass # unable to create settings file
+            logging.warning('error writing settings file')
                     
     

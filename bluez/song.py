@@ -1,13 +1,14 @@
 # Individual song class
 
 import discord
-import youtube_dl
+import yt_dlp
 import tinytag
 import httpio
 import asyncio
 import re
 import os
 import logging
+import urllib.parse
 
 from bluez.util import *
 
@@ -27,30 +28,17 @@ BLUEZ_DEBUG = bool(int(os.getenv('BLUEZ_DEBUG', '0')))
 
 # Search keys
 SEARCH_INFO = {
-    # name of streaming service -> (youtube-dl search key, appropriate emoji)
+    # name of streaming service -> (youtube-dl search key, appropriate emoji, whether or not it searches for playlists)
     # more of these may be added in the future
-    'YouTube'   : ('ytsearch', ':arrow_forward:'),
-    'SoundCloud': ('scsearch', ':cloud:'        ),
+    'YouTube Video'      : ('ytsearch', ':arrow_forward:', False),
+    'YouTube Playlist'   : ('ytsearch', ':arrow_forward:', True ),
+    'SoundCloud'         : ('scsearch', ':cloud:'        , False),
     }
 
 
-PLAYLIST_HACK = True # implement at your own risk
 
-
-
-if PLAYLIST_HACK:
-    
-    def _process_iterable_entry(self, entry, download, extra_info):
-        result = entry.copy()
-        result['extra_info_hack'] = extra_info.copy()
-        return result
-        
-    youtube_dl.YoutubeDL._YoutubeDL__process_iterable_entry = _process_iterable_entry
-
-    
-
-
-ydl = youtube_dl.YoutubeDL({
+# Youtube-DL options
+YTDL_OPTIONS = {
     'format': 'bestaudio/best',
     'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s',
     'restrictfilenames': True,
@@ -62,8 +50,10 @@ ydl = youtube_dl.YoutubeDL({
     'no_warnings': True,
     'cachedir': False,
     'default_search': 'auto',
-    'source_address': '0.0.0.0'
-})
+    'source_address': '0.0.0.0',
+    'noplaylist': True,
+    'extract_flat': 'in_playlist',
+}
 
 
 
@@ -71,7 +61,8 @@ ydl = youtube_dl.YoutubeDL({
 
 class Song(object):
 
-    def __init__(self, data, user):
+    def __init__(self, ydl, data, user):
+        self.ydl = ydl
         self.data = data
         self.user = user
         self.tempo = 1.0
@@ -80,7 +71,7 @@ class Song(object):
         self.init()
 
     def __eq__(self, other):
-        return isinstance(other, Song) and (self.name == other.name)
+        return isinstance(other, Song) and (self.name == other.name) and (self.link == other.link)
 
 
     def init(self):
@@ -111,13 +102,12 @@ class Song(object):
                 self.error = Exception('start time later than end time, no audio data')
         # trim the length to be between the start and end
         self.trim()
-        if 'extra_info_hack' in self.data:
+        if self.data.get('_type', 'video') != 'video':
+            # this song was part of a playlist so we don't have its url yet
             self.url = None
-            if self.data.get('ie_key') == 'Youtube':
-                self.link = 'https://www.youtube.com/watch?v=%s' % self.data['id']
-            else:
-                self.link = self.data.get('url')
+            self.link = self.data.get('url')
         else:
+            # this song has a URL loaded and ready to go
             self.url = self.data['url']
             self.link = self.data.get('webpage_url', getattr(self, 'link', None))
 
@@ -138,14 +128,13 @@ class Song(object):
             
         
         
-    def process(self):
+    async def process(self):
         # process a Song (i.e. actually ask youtube-dl to find the URL
-        # for it rather than delaying it till later). This does nothing if the
-        # ugly playlist hack (t.m.) is disabled.
-        if (self.url is None) and ('extra_info_hack' in self.data):
-            extra_info = self.data.pop('extra_info_hack')
+        # for it rather than delaying it till later).
+        if self.url is None:
+            loop = asyncio.get_event_loop()
             try:
-                self.data = ydl.process_ie_result(self.data, download=False, extra_info=extra_info)
+                self.data = (await loop.run_in_executor(None, lambda: self.ydl.process_ie_result(self.data, download=False)))
             except Exception as e:
                 self.error = e
             self.init()
@@ -223,7 +212,7 @@ class Song(object):
     async def get_audio(self, seek_pos=0, tempo=1.0, pitch=1.0, bass=1, nightcore=False, slowed=False, volume=1.0, stderr=None):
         # given start position and audio effect parameters, returns
         # an audio source object that can be played using a voice client
-        self.process()
+        await self.process()
         if self.error:
             return self.error
         before_options = '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
@@ -283,10 +272,52 @@ class Song(object):
 
 
 
+
+
+
 class Playlist(list):
-    # subclass that can have attributes (.name and .link) assigned
-    # for `enqueue_message` to read.
-    pass
+
+    def __init__(self, ydl, data, user):
+        list.__init__(self)
+        self.ydl = ydl
+        self.data = data
+        self.user = user
+        self.init()
+
+    def __eq__(self, other):
+        return isinstance(other, Playlist) and (self.name == other.name) and (self.link == other.link)
+
+    def copy(self):
+        new = list.__new__(Playlist)
+        new[:] = self
+        new.__dict__.update(self.__dict__)
+        return new
+
+    def init(self):
+        # initialize the data for a Playlist object
+        if 'entries' in self.data:
+            self[:] = [Song(self.ydl, entry, self.user) for entry in self.data['entries']]
+        else:
+            self[:] = []
+        self.name = self.data.get('title', '[no title]')
+        self.channel = self.data.get('channel', 'None')
+        self.channel_url = self.data.get('channel_url')
+        self.link = self.data.get('url', self.data.get('webpage_url', None))
+            
+    async def process(self):
+        # process a Playlist (i.e. actually ask youtube-dl to find the songs
+        # for it rather than delaying it till later).
+        if 'entries' not in self.data:
+            loop = asyncio.get_event_loop()
+            self.data = (await loop.run_in_executor(None, lambda: self.ydl.process_ie_result(self.data, download=False)))
+            self.init()
+
+    
+
+
+
+
+
 
 
 
@@ -314,12 +345,7 @@ def get_error(stderr):
 
 
 
-def is_url(string):
-    # return True if this string appears to be a valid website URL
-    return bool(re.match(r'(https:|http:|www\.)\S*', string))
-
-
-async def extract_info(url):
+async def extract_info(ydl, url):
     # ask youtube-dl to get the info for a given URL or search query, running
     # the command in the asyncio event loop to avoid blocking.
     loop = asyncio.get_event_loop()
@@ -329,28 +355,43 @@ async def extract_info(url):
 
 async def songs_from_url(url, user):
     # find and return songs from the given URL
-    data = (await extract_info(url))
-    if 'entries' in data:
-        entries = data['entries']
-        pl = Playlist([Song(entry, user) for entry in entries])
-        if 'title' in data:
-            pl.name = data['title']
-        if 'webpage_url' in data:
-            pl.link = data['webpage_url']
-        return pl
+    ydl = yt_dlp.YoutubeDL(YTDL_OPTIONS)
+    data = (await extract_info(ydl, url))
+    if data.get('_type') == 'playlist':
+        return Playlist(ydl, data, user)
     else:
-        return [Song(data, user)]
+        return [Song(ydl, data, user)]
 
 
 
-async def songs_from_search(query, user, maxn, search_key):
+async def songs_from_search(query, user, start, maxn, search_key):
     # find and return songs matching the given search query
-    data = (await extract_info('%s%d:%s' % (search_key, maxn, query)))
+    ydl = yt_dlp.YoutubeDL(YTDL_OPTIONS)
+    ydl.params['playliststart'] = start + 1
+    ydl.params['playlistend'] = maxn
+    data = (await extract_info(ydl, '%s%d:%s' % (search_key, maxn, query)))
+    del ydl.params['playliststart'], ydl.params['playlistend']
     entries = data['entries']
-    songs = [Song(entry, user) for entry in entries]
+    songs = [Song(ydl, entry, user) for entry in entries]
     if songs and (maxn == 1):
-        songs[0].process()
+        await songs[0].process()
     return songs[:maxn] # apparently SoundCloud can give you multiple songs even when you only ask for one...
 
 
 
+async def playlists_from_search(query, user, start, maxn):
+    # search youtube for playlists matching the given search query
+    ydl = yt_dlp.YoutubeDL(YTDL_OPTIONS)
+    ydl.params['playliststart'] = start + 1
+    ydl.params['playlistend'] = maxn
+    data = (await extract_info(ydl, 'https://www.youtube.com/results?sp=EgIQAw%253D%253D&search_query=' + \
+                               urllib.parse.quote_plus(query)))
+    del ydl.params['playliststart'], ydl.params['playlistend']
+    entries = data['entries']
+    playlists = [Playlist(ydl, entry, user) for entry in entries]
+    if playlists and (maxn == 1):
+        await playlists[0].process()
+    return playlists[:maxn]
+    
+    
+    
