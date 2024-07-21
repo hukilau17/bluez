@@ -8,12 +8,14 @@ import asyncio
 import re
 import os
 import typing
-import lyricsgenius
 import logging
+import urllib.request
+import json
 
 from bluez.player import *
 from bluez.song import *
 from bluez.views import *
+from bluez.lyrics import *
 from bluez.timezones import *
 from bluez.util import *
 
@@ -26,18 +28,12 @@ from bluez.util import *
 BLUEZ_DEBUG = bool(int(os.getenv('BLUEZ_DEBUG', '0')))
 BLUEZ_INVITE_LINK = os.getenv('BLUEZ_INVITE_LINK')
 BLUEZ_SOURCE_LINK = os.getenv('BLUEZ_SOURCE_LINK', 'https://github.com/hukilau17/bluez')
+BLUEZ_COMMAND = os.getenv('BLUEZ_COMMAND', '/home/bluez/bluez')
 
-if BLUEZ_DEBUG:
-    logging.basicConfig(level=logging.DEBUG)
-
-
-
-# Initialize the lyricsgenius interface
-try:
-    genius = lyricsgenius.Genius(verbose = BLUEZ_DEBUG)
-except:
-    # this should only happen if you haven't provided a token for the genius API
-    genius = None
+logging.basicConfig(
+    format='%(asctime)s %(levelname)-8s %(message)s',
+    level = logging.DEBUG if BLUEZ_DEBUG else logging.ERROR,
+    datefmt='%Y-%m-%d %H:%M:%S')
 
 
 
@@ -117,6 +113,17 @@ async def on_voice_state_update(member, before, after):
         player = player_map[before_guild.id]
         if player.voice_channel == before.channel:
             await player.notify_user_leave(member)
+    # Notify the bot if it is added to or removed from a channel
+    if (member == bot.user) and (before.channel != after.channel):
+        if after_guild:
+            player = player_map[after_guild.id]
+            if player.voice_channel != after.channel:
+                await player.notify_change_channel(after.channel)
+        elif before_guild:
+            player = player_map[before_guild.id]
+            if player.voice_channel is not None:
+                await player.notify_change_channel(None)
+        
 
 
 
@@ -124,12 +131,19 @@ async def on_voice_state_update(member, before, after):
 async def on_command_error(ctx, error):
     if isinstance(error, ParseTimeError):
         # Print out the message of the error itself if it was thrown by parse_time()
-        await ctx.send('**:x: %s**' % error)
+        await ctx.send(f'**:x: {error}**')
+    elif isinstance(error, commands.RangeError):
+        # Print out an out-of-range message
+        if error.maximum is None:
+            await ctx.send(f'**:x: invalid argument {ESC(error.value)}: must be at least {error.minimum}**')
+        elif error.minimum is None:
+            await ctx.send(f'**:x: invalid argument {ESC(error.value)}: must be at most {error.maximum}**')
+        else:
+            await ctx.send(f'**:x: invalid argument {ESC(error.value)}: must be between {error.minimum} and {error.maximum}**')
     elif isinstance(error, commands.UserInputError):
         # Print out a usage message for other user input-related errors
         embed = discord.Embed(title=':x: Invalid usage',
-                              description = '`%s%s %s`' % \
-                              (command_prefix(bot, ctx), ctx.command.name, ctx.command.signature),
+                              description = f'`{command_prefix(bot, ctx)}{ctx.command.name} {ctx.command.signature}`',
                               color=discord.Color.red())
         await ctx.send(embed=embed)
     elif isinstance(error, commands.CommandNotFound):
@@ -138,7 +152,7 @@ async def on_command_error(ctx, error):
     else:
         # should not happen; but if it does, notify the user
         log_exception(error)
-        await ctx.send('**:x: Internal Bluez error: `%s`**' % error)
+        await ctx.send(f'**:x: Internal Bluez error: `{error}`**')
 
 
 
@@ -177,8 +191,8 @@ async def get_player(ctx):
         return None
     if player.djonly and not player.is_dj(ctx.author):
         # if only DJ's are allowed to use bot commands, and the invoking player is not a DJ, return None
-        await ctx.send('**:x: The bot is currently in DJ only mode, you must have a role named `%s` \
-    or the `Manage Channels` permission to use it**' % player.djrole)
+        await ctx.send(f'**:x: The bot is currently in DJ only mode, you must have a role named `{player.djrole}` \
+    or the `Manage Channels` permission to use it**')
         return None
     # Otherwise return the player
     return player
@@ -193,7 +207,7 @@ class ParseTimeError(commands.BadArgument):
 def parse_time(time):
     # Converter function that takes a string describing a timestamp and returns an integer number of seconds.
     if len(time) > MAX_INPUT_LENGTH:
-        raise ParseTimeError('time `%s` is too large to parse' % time)
+        raise ParseTimeError(f'time `{time}` is too large to parse')
     try:
         # maybe it's just an integer number of seconds already
         result = int(time)
@@ -214,33 +228,16 @@ def parse_time(time):
                 s = int(match.group(3) or 0)
                 result = 3600*h + 60*m + s
             else:
-                raise ParseTimeError('unable to parse time `%s`' % time)
+                raise ParseTimeError(f'unable to parse time `{time}`')
     if result < 0:
         raise ParseTimeError('number of seconds must be nonnegative')
     if abs(result) > MAX_TIME_VALUE:
         # thanks to all the lovely Austin Math Circle members
         # for tirelessly trying to break my bot
         # and ultimately forcing me to add this code here.
-        raise ParseTimeError('time `%s` is too large to parse' % time)
+        raise ParseTimeError(f'time `{time}` is too large to parse')
     return result
 
-
-
-
-async def ensure_range(ctx, arg, descr, min, max):
-    # Error handler for commands that accept a range
-    if hasattr(arg, '__len__'):
-        arg = len(arg)
-    if (min is None) or (arg >= min):
-        if (max is None) or (arg <= max):
-            return True
-    if max is None:
-        await ctx.send('**:x: %s must be at least %s**' % (descr, min))
-    elif min is None:
-        await ctx.send('**:x: %s must be at most %s**' % (descr, max))
-    else:
-        await ctx.send('**:x: %s must be between %s and %s**' % (descr, min, max))
-    return False
     
     
     
@@ -300,9 +297,9 @@ async def play(ctx, query: str,
                     songs, where, priority = (await player.songs_from_search(ctx, query, where, priority, source))
             else:
                 if playlist:
-                    songs = (await player.playlist_from_query(ctx, query, source))
+                    songs = (await player.playlist_from_query(ctx, query, where, priority, source))
                 else:
-                    songs = (await player.songs_from_query(ctx, query, source))
+                    songs = (await player.songs_from_query(ctx, query, where, priority, source))
             if songs:
                 if where == 'Bottom':
                     if priority is None:
@@ -396,6 +393,8 @@ async def command_soundcloud(ctx, *, query: str):
 
 
 
+
+
 # now playing commands
 
 @bot.hybrid_command(name='nowplaying', aliases=['np'])
@@ -420,6 +419,7 @@ async def command_grab(ctx):
             else:
                 if ctx.interaction is not None:
                     await ctx.send('**:thumbsup: Message sent**')
+
 
 
 
@@ -472,7 +472,7 @@ async def command_replay(ctx):
 
 # song looping
 
-@bot.hybrid_command(name='loop', aliases=['repeat'])
+@bot.hybrid_command(name='loop', aliases=['repeat'], ignore_extra=False)
 @app_commands.describe(on='Indicate whether to turn looping on or off')
 async def command_loop(ctx, on: typing.Optional[bool] = None):
     '''Toggle looping for the currently playing song'''
@@ -492,7 +492,7 @@ async def app_repeat(interaction, on: typing.Optional[bool] = None):
 
 # song skipping
 
-@bot.hybrid_command(name='voteskip', aliases=['skip', 'next', 's'])
+@bot.hybrid_command(name='voteskip', aliases=['skip', 'next', 's'], ignore_extra=False)
 async def command_voteskip(ctx):
     '''Vote to skip the currently playing song'''
     player = (await get_player(ctx))
@@ -507,7 +507,7 @@ async def app_skip(interaction):
     await command_voteskip.callback(await bot.get_context(interaction))
 
 
-@bot.hybrid_command(name='forceskip', aliases=['fs', 'fskip'])
+@bot.hybrid_command(name='forceskip', aliases=['fs', 'fskip'], ignore_extra=False)
 @app_commands.describe(position='The position in the queue to skip to (1 is the top of the queue)')
 async def command_forceskip(ctx, position: int = 1):
     '''Skip the currently playing song immediately'''
@@ -553,9 +553,6 @@ async def app_unpause(interaction):
 @bot.hybrid_command(name='lyrics', aliases=['l', 'ly'])
 async def command_lyrics(ctx, *, query: typing.Optional[str] = None):
     '''Get the lyrics of a song (by default the currently playing song)'''
-    if genius is None:
-        await ctx.send('**:x: Lyric searching is not enabled.**')
-        return
     is_now_playing = False
     artist = ''
     # figure out who the guild is
@@ -581,46 +578,28 @@ async def command_lyrics(ctx, *, query: typing.Optional[str] = None):
     else:
         song_name = query
     if artist:
-        await ctx.send('**:mag: Searching lyrics for `%s` by `%s`**' % (song_name, artist))
+        await ctx.send(f'**:mag: Searching lyrics for `{song_name}` by `{artist}`**')
     else:
-        await ctx.send('**:mag: Searching lyrics for `%s`**' % song_name)
+        await ctx.send(f'**:mag: Searching lyrics for `{song_name}`**')
+    # get the lyrics to the song
     try:
-        song = genius.search_song(song_name, artist)
+        lyrics = get_lyrics(song_name, artist, is_now_playing)
     except Exception as e:
-        await ctx.send('**:x: Genius error: `%s`**' % e)
+        await ctx.send(f'**:x: Genius error: `{e}`**')
         return
-    if is_now_playing and (not song) and (not artist):
-        # Sometimes song titles on YouTube videos contain too much information (e.g. "Official Audio/Video")
-        # that makes Genius fail to return a meaningful result. This is a really cheap attempt to lower the probability
-        # of that happening.
-        m = re.search(r'[()\[\]|]', song_name)
-        if m:
-            song_name = song_name[:m.start()] # "artist - song (official audio)" becomes just "artist - song"
-            try:
-                song = genius.search_song(song_name)
-            except Exception as e:
-                await ctx.send('**:x: Genius error: `%s`**' % e)
-                return
-    if song:
-        lyrics = song.lyrics
-        m = re.search(r'\d*Embed', lyrics)
-        if m:
-            # get rid of trailing garbage that Genius puts in
-            lyrics = lyrics[:m.start()]
-        embeds = []
-        npages = (len(lyrics) - 1) // 4000 + 1
-        for i in range(npages):
-            # make sure the lyrics aren't too long to fit into a single embed
-            # the lyrics to "American Pie" are over 4000 characters long :P
-            embed = discord.Embed(title='%s - %s' % (song.artist, song.title),
-                                  description=lyrics[4000 * i : 4000 * (i+1)] + '\n\nPage %d/%d' % (i+1, npages),
-                                  color=discord.Color.green())
-            embed.set_thumbnail(url=song.song_art_image_thumbnail_url)
-            embed.set_footer(text='Requested by %s' % format_user(ctx.author), icon_url=ctx.author.avatar.url)
-            embeds.append(embed)
-        await post_multipage_embed(ctx, embeds)
-    else:
-        await ctx.send('**:x: There were no results matching the query**')
+    # create the embed(s) for displaying the lyrics
+    embeds = []
+    npages = (len(lyrics) - 1) // 4000 + 1
+    for i in range(npages):
+        # make sure the lyrics aren't too long to fit into a single embed
+        # the lyrics to "American Pie" are over 4000 characters long :P
+        embed = discord.Embed(title=f'{ESC(song.artist)} - {ESC(song.title)}',
+                              description=lyrics[4000 * i : 4000 * (i+1)] + f'\n\nPage {i+1}/{npages}',
+                              color=discord.Color.green())
+        embed.set_thumbnail(url=song.song_art_image_thumbnail_url)
+        embed.set_footer(text=f'Requested by {format_user(ctx.author)}', icon_url=ctx.author.avatar.url)
+        embeds.append(embed)
+    await post_multipage_embed(ctx, embeds)
 
 
 
@@ -640,7 +619,7 @@ async def command_disconnect(ctx):
 
 # queue/history
 
-@bot.hybrid_command(name='queue', aliases=['q'])
+@bot.hybrid_command(name='queue', aliases=['q'], ignore_extra=False)
 @app_commands.describe(page='The page number in the queue to show')
 async def command_queue(ctx, page: typing.Optional[int] = None):
     '''Show the list of songs in the queue'''
@@ -663,7 +642,7 @@ async def command_history(ctx, *, timezone: typing.Optional[str] = None):
                 if timezone.lower() in TIMEZONES_LOWER:
                     timezone = get_timezone(timezone)
                 else:
-                    await ctx.send('**:x: Invalid timezone `%s`**' % timezone)
+                    await ctx.send(f'**:x: Invalid timezone `{timezone}`**')
                     timezone = None
                     # don't exit; still output the history in this case, in UTC time
             await player.history_message(ctx, timezone)
@@ -684,11 +663,11 @@ async def command_back(ctx):
     '''Skip backwards and play the previous song again'''
     player = (await get_player(ctx))
     if player is not None:
-        if (await player.ensure_dj(ctx)) and (await player.ensure_history(ctx)):
+        if (await player.ensure_dj(ctx)) and (await player.ensure_current_history(ctx)):
             await player.skipback(ctx)
 
 
-@bot.hybrid_command(name='loopqueue', aliases=['loopq', 'lq', 'qloop', 'queueloop'])
+@bot.hybrid_command(name='loopqueue', aliases=['loopq', 'lq', 'qloop', 'queueloop'], ignore_extra=False)
 @app_commands.describe(on='Indicate whether to turn queue looping on or off')
 async def command_loopqueue(ctx, on: typing.Optional[bool] = None):
     '''Toggle looping for the whole queue'''
@@ -699,7 +678,7 @@ async def command_loopqueue(ctx, on: typing.Optional[bool] = None):
 
 
 
-@bot.hybrid_command(name='move', aliases=['m', 'mv'])
+@bot.hybrid_command(name='move', aliases=['m', 'mv'], ignore_extra=False)
 @app_commands.describe(old='The position of the song before it is moved (1 is the top of the queue)',
                        new='The position the song is to be moved to')
 async def command_move(ctx, old: int, new: int = 1):
@@ -711,7 +690,7 @@ async def command_move(ctx, old: int, new: int = 1):
 
 
 
-@bot.hybrid_command(name='skipto', aliases=['st'])
+@bot.hybrid_command(name='skipto', aliases=['st'], ignore_extra=False)
 @app_commands.describe(position='The position in the queue to skip to (1 is the top of the queue)')
 async def command_skipto(ctx, position: int):
     '''Skip to a certain position in the queue'''
@@ -751,9 +730,47 @@ async def command_shuffle(ctx, *, query: typing.Optional[str] = None):
 
 
 
+
+
+# query autocomplete
+
+@app_play.autocomplete('query')
+@app_search.autocomplete('query')
+@command_playtop.autocomplete('query')
+@command_playskip.autocomplete('query')
+@command_playlist.autocomplete('query')
+@command_soundcloud.autocomplete('query') # for consistency, we use this autocompleter even when the user is explicitly
+@command_lyrics.autocomplete('query')     # searching something that isn't youtube (e.g. SoundCloud)
+@app_shuffle.autocomplete('query')
+async def play_autocomplete(interaction, current):
+    # return list of choices matching what the user has typed so far in the query for the play/search commands
+    if not current:
+        return [] # don't return any choices if they haven't started to type anything yet
+    if is_url(current):
+        return [] # don't return any choices if what they're typing appears to be a url
+    loop = asyncio.get_event_loop()
+    response = (await loop.run_in_executor(None, lambda: urllib.request.urlopen(
+        'https://suggestqueries-clients6.youtube.com/complete/search?client=youtube-reduced'
+        f'&hl=en&gs_ri=youtube-reduced&ds=yt&cp=3&gs_id=100&q={current}&xhr=t&xssi=t&gl=us')))
+    content = response.read()
+    if not content:
+        logging.warning('youtube autocomplete query unexpectedly returned empty result')
+        return []
+    try:
+        content = content[content.index(b'['):content.rindex(b']')+1]
+        data = json.loads(content)
+        data = [result[0][:100] for result in data[1]] # get the string results from the data, making sure they aren't more than 100 characters
+    except:
+        logging.error('could not parse JSON returned by youtube autocomplete query')
+        return []
+    return [app_commands.Choice(name=result, value=result) for result in data]
+
+
+
+
 # remove command family
 
-@bot.hybrid_group(name='remove', fallback='song', aliases=['rm'])
+@bot.hybrid_group(name='remove', fallback='song', aliases=['rm'], ignore_extra=False)
 @app_commands.describe(position='The position of the song in the queue to remove (1 is the top of the queue)')
 async def command_remove(ctx, position: int):
     '''Remove a certain song from the queue'''
@@ -763,7 +780,7 @@ async def command_remove(ctx, position: int):
             await player.remove(ctx, position)
 
 
-@command_remove.command(name='range', aliases=['songs'])
+@command_remove.command(name='range', aliases=['songs'], ignore_extra=False)
 @app_commands.describe(start='The first position to remove (1 is the top of the queue)',
                        end='The last position to remove (defaults to the end of the queue)')
 async def command_remove_range(ctx, start: int, end: typing.Optional[int] = None):
@@ -778,7 +795,7 @@ async def command_remove_range(ctx, start: int, end: typing.Optional[int] = None
 # advanced queue commands
 
 
-@bot.hybrid_command(name='clear', aliases=['cl'])
+@bot.hybrid_command(name='clear', aliases=['cl'], ignore_extra=False)
 @app_commands.describe(user='Remove only the songs posted by this user')
 async def command_clear(ctx, user: typing.Optional[discord.Member] = None):
     '''Clear the whole queue'''
@@ -819,9 +836,9 @@ async def command_settings(ctx):
         await player.settings_show(ctx)
 
 
-@command_settings.command(name='prefix')
+@command_settings.command(name='prefix', ignore_extra=False)
 @app_commands.describe(prefix='The command prefix, such as `!`')
-async def command_settings_prefix(ctx, prefix: typing.Optional[app_commands.Range[str, 1, 5]] = None):
+async def command_settings_prefix(ctx, prefix: typing.Optional[commands.Range[str, 1, 5]] = None):
     '''Query or set the Bluez bot prefix'''
     player = (await get_player(ctx))
     if player is not None:
@@ -831,7 +848,7 @@ async def command_settings_prefix(ctx, prefix: typing.Optional[app_commands.Rang
                 player.save_settings()
 
 
-@command_settings.command(name='blacklist')
+@command_settings.command(name='blacklist', ignore_extra=False)
 @app_commands.describe(channel='Channel to add to or remove from the blacklist')
 async def command_settings_blacklist(ctx, channel: typing.Optional[discord.TextChannel] = None):
     '''Toggle whether a channel is blacklisted or not'''
@@ -843,7 +860,7 @@ async def command_settings_blacklist(ctx, channel: typing.Optional[discord.TextC
                 player.save_settings()
 
 
-@command_settings.command(name='autoplay')
+@command_settings.command(name='autoplay', ignore_extra=False)
 @app_commands.describe(playlist='URL linking to a playlist, or `disable` to turn off autoplay')
 async def command_settings_autoplay(ctx, playlist: typing.Optional[str] = None):
     '''Query or set the playlist that Bluez automatically plays when it comes online'''
@@ -855,7 +872,7 @@ async def command_settings_autoplay(ctx, playlist: typing.Optional[str] = None):
                 player.save_settings()
 
 
-@command_settings.command(name='announcesongs')
+@command_settings.command(name='announcesongs', ignore_extra=False)
 @app_commands.describe(on='Indicate whether to turn announcing songs on or off')
 async def command_settings_announcesongs(ctx, on: typing.Optional[bool] = None):
     '''Query or set whether Bluez announces new songs that come on'''
@@ -867,9 +884,9 @@ async def command_settings_announcesongs(ctx, on: typing.Optional[bool] = None):
                 player.save_settings()
 
 
-@command_settings.command(name='maxqueuelength')
+@command_settings.command(name='maxqueuelength', ignore_extra=False)
 @app_commands.describe(length='The maximum allowed length of the queue, or `0` to allow any length')
-async def command_settings_maxqueuelength(ctx, length: typing.Optional[app_commands.Range[int, 0, 10000]] = None):
+async def command_settings_maxqueuelength(ctx, length: typing.Optional[commands.Range[int, 0, 10000]] = None):
     '''Query or set the maximum number of songs allowed on the queue at once'''
     player = (await get_player(ctx))
     if player is not None:
@@ -879,9 +896,9 @@ async def command_settings_maxqueuelength(ctx, length: typing.Optional[app_comma
                 player.save_settings()
 
 
-@command_settings.command(name='maxusersongs')
+@command_settings.command(name='maxusersongs', ignore_extra=False)
 @app_commands.describe(number='The maximum number of songs per user, or `0` to allow any number')
-async def command_settings_maxusersongs(ctx, number: typing.Optional[app_commands.Range[int, 0, 10000]] = None):
+async def command_settings_maxusersongs(ctx, number: typing.Optional[commands.Range[int, 0, 10000]] = None):
     '''Query or set the maximum number of songs a single user is allowed to add to the queue at once'''
     player = (await get_player(ctx))
     if player is not None:
@@ -891,7 +908,7 @@ async def command_settings_maxusersongs(ctx, number: typing.Optional[app_command
                 player.save_settings()
 
 
-@command_settings.command(name='preventduplicates')
+@command_settings.command(name='preventduplicates', ignore_extra=False)
 @app_commands.describe(on='Indicate whether to prevent duplicate songs from being posted')
 async def command_settings_preventduplicates(ctx, on: typing.Optional[bool] = None):
     '''Query or set whether Bluez blocks duplicate songs from being added to the queue'''
@@ -903,9 +920,9 @@ async def command_settings_preventduplicates(ctx, on: typing.Optional[bool] = No
                 player.save_settings()
 
 
-@command_settings.command(name='defaultvolume')
+@command_settings.command(name='defaultvolume', ignore_extra=False)
 @app_commands.describe(volume='The default volume Bluez should use in this server')
-async def command_settings_defaultvolume(ctx, volume: typing.Optional[app_commands.Range[int, 0, 200]] = None):
+async def command_settings_defaultvolume(ctx, volume: typing.Optional[commands.Range[int, 0, 200]] = None):
     '''Query or set the default volume Bluez uses when joining'''
     player = (await get_player(ctx))
     if player is not None:
@@ -915,7 +932,7 @@ async def command_settings_defaultvolume(ctx, volume: typing.Optional[app_comman
                 player.save_settings()
 
 
-@command_settings.command(name='djplaylists')
+@command_settings.command(name='djplaylists', ignore_extra=False)
 @app_commands.describe(on='Indicate whether to prevent non-DJ members from queueing up playlists')
 async def command_settings_djplaylists(ctx, on: typing.Optional[bool] = None):
     '''Query or set whether Bluez blocks non-DJ members from adding whole playlists to the queue'''
@@ -927,7 +944,7 @@ async def command_settings_djplaylists(ctx, on: typing.Optional[bool] = None):
                 player.save_settings()
 
 
-@command_settings.command(name='djonly')
+@command_settings.command(name='djonly', ignore_extra=False)
 @app_commands.describe(on='Indicate whether Bluez should only respond to commands from DJs')
 async def command_settings_djonly(ctx, on: typing.Optional[bool] = None):
     '''Query or set whether Bluez blocks non-DJ members from interacting with it'''
@@ -939,7 +956,7 @@ async def command_settings_djonly(ctx, on: typing.Optional[bool] = None):
                 player.save_settings()
 
 
-@command_settings.command(name='djrole')
+@command_settings.command(name='djrole', ignore_extra=False)
 @app_commands.describe(role='The role to set as the new DJ role')
 async def command_settings_djrole(ctx, role: typing.Optional[discord.Role] = None):
     '''Query or set the role that Bluez recognizes as the DJ role in this server'''
@@ -951,7 +968,7 @@ async def command_settings_djrole(ctx, role: typing.Optional[discord.Role] = Non
                 player.save_settings()
 
 
-@command_settings.command(name='alwaysplaying')
+@command_settings.command(name='alwaysplaying', ignore_extra=False)
 @app_commands.describe(on='Indicate whether Bluez should stay in voice channels permanently')
 async def command_settings_alwaysplaying(ctx, on: typing.Optional[bool] = None):
     '''Query or set whether Bluez stays in voice channels and continues playing even when no one is there'''
@@ -963,7 +980,7 @@ async def command_settings_alwaysplaying(ctx, on: typing.Optional[bool] = None):
                 player.save_settings()
 
 
-@command_settings.command(name='reset', aliases=['clear'])
+@command_settings.command(name='reset', aliases=['clear'], ignore_extra=False)
 async def command_settings_reset(ctx):
     '''Reset all Bluez settings to their default values'''
     player = (await get_player(ctx))
@@ -1008,12 +1025,10 @@ async def command_effects_clear(ctx):
 # individual effect settings
 
 
-@bot.tree.command(name='speed')
+@bot.hybrid_command(name='speed', ignore_extra=False)
 @app_commands.describe(speed='The factor by which to speed up or slow down the playback')
-async def app_speed(ctx, speed: typing.Optional[app_commands.Range[float, 0.3, 3.0]] = None):
+async def command_speed(ctx, speed: typing.Optional[commands.Range[float, 0.3, 3.0]] = None):
     '''Show or adjust the playback speed'''
-    if isinstance(ctx, discord.Interaction):
-        ctx = (await bot.get_context(ctx))
     player = (await get_player(ctx))
     if player is not None:
         if (await player.ensure_connected(ctx)):
@@ -1021,16 +1036,10 @@ async def app_speed(ctx, speed: typing.Optional[app_commands.Range[float, 0.3, 3
                 await player.effect_speed(ctx, speed)
 
 
-@bot.command(name='speed')
-async def command_speed(ctx, speed: typing.Optional[float] = None):
-    '''Show or adjust the playback speed'''
-    if (speed is None) or (await ensure_range(ctx, speed, 'speed', 0.3, 3)):
-        await app_speed.callback(ctx, speed)
 
-
-@bot.hybrid_group(name='pitch', fallback='scale')
+@bot.hybrid_group(name='pitch', fallback='scale', ignore_extra=False)
 @app_commands.describe(scale='The factor by which the playback should be pitched up or down')
-async def command_pitch(ctx, scale: typing.Optional[app_commands.Range[float, 0.3, 3.0]] = None):
+async def command_pitch(ctx, scale: typing.Optional[commands.Range[float, 0.3, 3.0]] = None):
     '''Show or adjust the playback pitch'''
     player = (await get_player(ctx))
     if player is not None:
@@ -1039,9 +1048,9 @@ async def command_pitch(ctx, scale: typing.Optional[app_commands.Range[float, 0.
                 await player.effect_pitch_scale(ctx, scale)
 
 
-@command_pitch.command(name='steps')
+@command_pitch.command(name='steps', ignore_extra=False)
 @app_commands.describe(steps='The number of semitones by which the playback should be shifted up or down')
-async def command_pitch_steps(ctx, steps: typing.Optional[app_commands.Range[float, -20, 20]] = None):
+async def command_pitch_steps(ctx, steps: typing.Optional[commands.Range[float, -20, 20]] = None):
     '''Show or adjust the playback pitch in semitones'''
     player = (await get_player(ctx))
     if player is not None:
@@ -1050,12 +1059,10 @@ async def command_pitch_steps(ctx, steps: typing.Optional[app_commands.Range[flo
                 await player.effect_pitch_steps(ctx, steps)
 
 
-@bot.tree.command(name='bassboost')
+@bot.hybrid_command(name='bassboost', aliases=['bass'], ignore_extra=False)
 @app_commands.describe(bass='The level of the bass boost (1 is normal, 5 is maximal)')
-async def app_bassboost(ctx, bass: typing.Optional[app_commands.Range[int, 1, 5]] = None):
+async def command_bassboost(ctx, bass: typing.Optional[commands.Range[int, 1, 5]] = None):
     '''Show or adjust the bass-boost effect'''
-    if isinstance(ctx, discord.Interaction):
-        ctx = (await bot.get_context(ctx))
     player = (await get_player(ctx))
     if player is not None:
         if (await player.ensure_connected(ctx)):
@@ -1063,14 +1070,7 @@ async def app_bassboost(ctx, bass: typing.Optional[app_commands.Range[int, 1, 5]
                 await player.effect_bassboost(ctx, bass)
 
 
-@bot.command(name='bassboost', aliases=['bass'])
-async def command_bassboost(ctx, bass: typing.Optional[int] = None):
-    '''Show or adjust the bass-boost effect'''
-    if (bass is None) or (await ensure_range(ctx, bass, 'bass', 1, 5)):
-        await app_bassboost.callback(ctx, bass)
-
-
-@bot.hybrid_command(name='nightcore', aliases=['weeb'])
+@bot.hybrid_command(name='nightcore', aliases=['weeb'], ignore_extra=False)
 @app_commands.describe(on='Indicate whether the nightcore audio effect should be turned on or off')
 async def command_nightcore(ctx, on: typing.Optional[bool] = None):
     '''Toggle the nightcore effect'''
@@ -1087,7 +1087,7 @@ async def app_weeb(interaction, on: typing.Optional[bool] = None):
     await command_nightcore.callback(await bot.get_context(interaction), on)
 
 
-@bot.hybrid_command(name='slowed')
+@bot.hybrid_command(name='slowed', ignore_extra=False)
 @app_commands.describe(on='Indicate whether the slowed audio effect should be turned on or off')
 async def command_slowed(ctx, on: typing.Optional[bool] = None):
     '''Toggle the slowed effect'''
@@ -1097,12 +1097,10 @@ async def command_slowed(ctx, on: typing.Optional[bool] = None):
             await player.effect_slowed(ctx, on)
 
 
-@bot.tree.command(name='volume')
+@bot.hybrid_command(name='volume', ignore_extra=False)
 @app_commands.describe(volume='The volume Bluez should play at (0 is silent, 100 is default, 200 is maximal)')
-async def app_volume(ctx, volume: typing.Optional[app_commands.Range[int, 0, 200]] = None):
+async def command_volume(ctx, volume: typing.Optional[commands.Range[int, 0, 200]] = None):
     '''Show or adjust the playback volume'''
-    if isinstance(ctx, discord.Interaction):
-        ctx = (await bot.get_context(ctx))
     player = (await get_player(ctx))
     if player is not None:
         if (await player.ensure_connected(ctx)):
@@ -1110,18 +1108,12 @@ async def app_volume(ctx, volume: typing.Optional[app_commands.Range[int, 0, 200
                 await player.effect_volume(ctx, volume)
 
 
-@bot.command(name='volume', aliases=['vol'])
-async def command_volume(ctx, volume: typing.Optional[int] = None):
-    '''Show or adjust the playback volume'''
-    if (volume is None) or (await ensure_range(ctx, volume, 'volume', 0, 200)):
-        await app_volume.callback(ctx, volume)
-
 
 
 # Miscellaneous other stuff
 
 
-@bot.hybrid_command(name='prune', aliases=['purge', 'clean'])
+@bot.hybrid_command(name='prune', aliases=['purge', 'clean'], ignore_extra=False)
 @app_commands.describe(number='The number of recent bot messages in this channel to delete (0 to delete all within the last 24 hours)')
 async def command_prune(ctx, number: typing.Optional[int] = None):
     '''Delete the bot's messages and commands'''
@@ -1140,13 +1132,14 @@ async def command_aliases(ctx):
     prefix = command_prefix(bot, ctx)
     for command in sorted(bot.commands, key = lambda x: x.name):
         if command.aliases:
-            commands.append('%s%s - `%s`' % (prefix, command.name, ', '.join(sorted(command.aliases))))
+            aliases = ', '.join(sorted(command.aliases))
+            commands.append(f'{prefix}{command.name} - `{aliases}`')
     embeds = []
     npages = (len(commands) - 1) // 20 + 1
     for i in range(npages):
         embed = discord.Embed(title='Aliases!')
         page = commands[20*i : 20*(i+1)]
-        embed.description = '\n'.join(page) + ('\n\nPage %d/%d' % (i+1, npages))
+        embed.description = '\n'.join(page) + (f'\n\nPage {i+1}/{npages}')
         embed.set_footer(text='Bluez, ready for your command!', icon_url=bot.user.avatar.url)
         embeds.append(embed)
     await post_multipage_embed(ctx, embeds)
@@ -1159,18 +1152,19 @@ async def command_help(ctx):
     prefix = command_prefix(bot, ctx)
     for command in sorted(bot.commands, key = lambda x: x.name):
         if command.aliases:
-            alias = ' (also known as: `%s`)' % ', '.join(sorted(command.aliases))
+            aliases = ', '.join(sorted(command.aliases))
+            alias = f' (also known as: `{aliases}`)'
         else:
             alias = ''
         signature = command.signature
         if signature: signature = ' ' + signature
-        commands.append('`%s%s%s` - %s%s' % (prefix, command.name, signature, command.help, alias))
+        commands.append(f'`{prefix}{command.name}{signature}` - {command.help}{alias}')
     embeds = []
     npages = (len(commands) - 1) // 10 + 1
     for i in range(npages):
         embed = discord.Embed(title='Bluez bot commands')
         page = commands[10*i : 10*(i+1)]
-        embed.description = '\n\n'.join(page) + ('\n\nPage %d/%d' % (i+1, npages))
+        embed.description = '\n\n'.join(page) + (f'\n\nPage {i+1}/{npages}')
         embed.set_footer(text='Bluez, ready for your command!', icon_url=bot.user.avatar.url)
         embeds.append(embed)
     await post_multipage_embed(ctx, embeds)
@@ -1180,32 +1174,45 @@ async def command_help(ctx):
 @bot.hybrid_command(name='ping')
 async def command_ping(ctx):
     '''Check the bot's response time to Discord'''
-    await ctx.send('**Howdy.** Ping time is %d ms :heartbeat:' % (bot.latency * 1000))
+    await ctx.send(f'**Howdy.** Ping time is {(bot.latency * 1000):.0f} ms :heartbeat:')
 
 
 @bot.hybrid_command(name='info')
 async def command_info(ctx):
     '''Show information about Bluez'''
     if BLUEZ_INVITE_LINK:
-        invite = '\n[Invite](%s)' % BLUEZ_INVITE_LINK
+        invite = f'\n[Invite]({BLUEZ_INVITE_LINK})'
     else:
         invite = ''
     embed = discord.Embed(title='About Bluez',
-                          description='''Bluez is a personal-use, open source music bot implemented in Python.
-[Source](%s)%s''' % (BLUEZ_SOURCE_LINK, invite))
+                          description=f'''Bluez is a personal-use, open source music bot implemented in Python.
+[Source]({BLUEZ_SOURCE_LINK}){invite}''')
     await ctx.send(embed=embed)
 
 
 @bot.hybrid_command(name='invite', aliases=['links'])
 async def command_invite(ctx):
     '''Show the links for Bluez'''
-    # !invite
     if BLUEZ_INVITE_LINK:
-        await ctx.send('**:link: Use this link to invite Bluez to other servers:** %s' % BLUEZ_INVITE_LINK)
+        await ctx.send(f'**:link: Use this link to invite Bluez to other servers: {BLUEZ_INVITE_LINK}**')
     else:
-        await ctx.send('**:no_entry_sign: Do not add Bluez to other servers, since it is currently in beta and strictly \
-for personal use. Source code is freely available online: %s**' % BLUEZ_SOURCE_LINK)
+        await ctx.send(f'**:no_entry_sign: Do not add Bluez to other servers, since it is currently in beta and strictly \
+for personal use. Source code is freely available online: {BLUEZ_SOURCE_LINK}**')
     
 
+
+
+
+
+# Debug reboot command
+
+if BLUEZ_DEBUG:
+
+    @bot.hybrid_command(name='reboot', aliases=['kill'])
+    async def command_reboot(ctx):
+        '''Reboot Bluez bot. Only available in debug mode.'''
+        await ctx.send('**:bomb: Rebooting Bluez, be back soon!**')
+        await bot.close()
+        os.spawnl(os.P_NOWAIT, BLUEZ_COMMAND)
 
 

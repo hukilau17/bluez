@@ -158,6 +158,10 @@ class SearchView(discord.ui.View):
         self.update_button_states()
 
 
+    def object_name(self):
+        return 'playlist' if self.playlists else 'song'
+
+
     def update_button_states(self):
         if SEARCH_PREV_NEXT:
             self.prev_button.disabled = (self.current_page == 0)
@@ -169,10 +173,10 @@ class SearchView(discord.ui.View):
             self.select_menu.options = [discord.SelectOption(label='1')]
             self.select_menu.disabled = True
         where_options = [
-            discord.SelectOption(label='Bottom', description='Place the selected %s at the bottom of the queue' % ('playlist' if self.playlists else 'song')),
-            discord.SelectOption(label='Top', description='Place the selected %s at the top of the queue' % ('playlist' if self.playlists else 'song')),
-            discord.SelectOption(label='Now', description='Play the selected %s immediately, skipping anything that is currently playing' % ('playlist' if self.playlists else 'song')),
-            discord.SelectOption(label='Shuffle', description='Shuffle the selected %s into the queue' % ('playlist' if self.playlists else 'song')),
+            discord.SelectOption(label='Bottom', description=f'Place the selected {self.object_name()} at the bottom of the queue'),
+            discord.SelectOption(label='Top', description=f'Place the selected {self.object_name()} at the top of the queue'),
+            discord.SelectOption(label='Now', description=f'Play the selected {self.object_name()} immediately, skipping anything that is currently playing'),
+            discord.SelectOption(label='Shuffle', description=f'Shuffle the selected {self.object_name()} into the queue'),
             ]
         if self.is_dj:
             where_options[('Bottom', 'Top', 'Now', 'Shuffle').index(self.where)].default = True
@@ -196,7 +200,7 @@ class SearchView(discord.ui.View):
 
 
     async def open(self, emoji=':arrow_forward:'):
-        await self.ctx.send('**%s Searching :mag: `%s`**' % (emoji, self.query))
+        await self.ctx.send(f'**{emoji} Searching :mag: `{self.query}`**')
         await self.search()
         if self.options:
             await self.update_embed()
@@ -219,7 +223,7 @@ class SearchView(discord.ui.View):
         except Exception as e:
             # error occurred (should not happen)
             await self.close()
-            await self.ctx.send('**:x: Error searching for `%s`: `%s`**' % (self.query, e))
+            await self.ctx.send(f'**:x: Error searching for `{self.query}`: `{e}`**')
         else:
             if not options:
                 if self.current_page == 0:
@@ -246,14 +250,13 @@ class SearchView(discord.ui.View):
         # Create an embed of the songs currently visible in the search view
         options = self.options[self.current_page * 10 : (self.current_page + 1) * 10]
         if self.playlists:
-            description = '\n\n'.join(['`%d.` %s' % (i+1, format_link(playlist)) for i, playlist in enumerate(options, self.current_page * 10)])
+            description = '\n\n'.join([f'`{i+1}.` {format_link(playlist)}' for i, playlist in enumerate(options, self.current_page * 10)])
         else:
-            description = '\n\n'.join(['`%d.` %s **[%s]**' % (i+1, format_link(song),
-                                                              format_time(song.length / self.tempo)) \
+            description = '\n\n'.join([f'`{i+1}.` {format_link(song)} **[{format_time(song.length / self.tempo)}]**' \
                                        for i, song in enumerate(options, self.current_page * 10)])
         embed = discord.Embed(description=description)
         embed.set_author(name=(self.ctx.author.nick or self.ctx.author.name), icon_url=self.ctx.author.avatar.url)
-        embed.set_footer(text = 'Page %d of results' % (self.current_page + 1))
+        embed.set_footer(text = f'Page {self.current_page + 1} of results')
         if self.message is None:
             self.message = (await self.ctx.send(embed=embed, view=self))
         else:

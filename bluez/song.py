@@ -24,6 +24,7 @@ MAX_TIME_VALUE = 36000000 # ffmpeg does not allow timestamps of 10000 hours or m
 MAX_INPUT_LENGTH = 30
 
 BLUEZ_DEBUG = bool(int(os.getenv('BLUEZ_DEBUG', '0')))
+BLUEZ_PROXY = os.getenv('BLUEZ_PROXY', '')
 
 
 # Search keys
@@ -47,6 +48,7 @@ YTDL_OPTIONS = {
     'logtostderr': False,
     'verbose': BLUEZ_DEBUG,
     'quiet': not BLUEZ_DEBUG,
+    'proxy': BLUEZ_PROXY,
     'no_warnings': True,
     'cachedir': False,
     'default_search': 'auto',
@@ -153,7 +155,7 @@ class Song(object):
                 loop = asyncio.get_event_loop()
                 await loop.run_in_executor(None, lambda: tag.load(tags=True, duration=True))
         except Exception as error:
-            logging.warning('unable to get metadata for "%s": %s' % (self.name, error))
+            logging.warning(f'unable to get metadata for "{self.name}": {error}')
             return
         # If successful, set information from this tag object
         if not self.length:
@@ -166,7 +168,7 @@ class Song(object):
             self.track = tag.title
         if (self.name == '[no title]') and self.track:
             if self.artist:
-                self.name = '%s - %s' % (self.artist, self.track)
+                self.name = f'{self.artist} - {self.track}'
             else:
                 self.name = self.track
 
@@ -176,7 +178,7 @@ class Song(object):
         try:
             await asyncio.wait_for(self.get_metadata(), timeout)
         except asyncio.TimeoutError:
-            logging.warning('timed out while getting metadata for "%s"' % self.name)
+            logging.warning(f'timed out while getting metadata for "{self.name}"')
 
 
     def fetch_metadata(self):
@@ -190,7 +192,7 @@ class Song(object):
     async def reload(self):
         # Reload this song and get a fresh link to it
         # this should only be called if something goes wrong
-        logging.warning('Attempting to reload "%s"' % self.name)
+        logging.warning(f'Attempting to reload "{self.name}"')
         songs = (await songs_from_url(self.link, self.user))
         if songs:
             self.__dict__.update(songs[0].__dict__)
@@ -225,16 +227,16 @@ class Song(object):
         if self.start is not None:
             seek_pos += self.start
         if seek_pos != 0:
-            before_options += ' -ss %s' % format_time(seek_pos * self.tempo)
+            before_options += f' -ss {format_time(seek_pos * self.tempo)}'
         if self.end is not None:
-            before_options += ' -to %s' % format_time(self.end * self.tempo)
+            before_options += f' -to {format_time(self.end * self.tempo)}'
         af = []
         # change the bass and treble gains if bass-boosting is turned on
         if bass != 1:
             bass_gain = BASS_BOOST_DB * (bass-1)
             treble_loss = -TREBLE_ATTENUATE_DB * (bass-1)
-            af.append('bass=g=%d' % bass_gain)
-            af.append('treble=g=%d' % treble_loss)
+            af.append(f'bass=g={bass_gain}')
+            af.append(f'treble=g={treble_loss}')
         # change the tempo and pitch
         # tempo/pitch is first adjusted by varying the sampling rate,
         # then tempo can be additionally altered by using the atempo filter
@@ -244,7 +246,8 @@ class Song(object):
                 if asr is None:
                     asr = 44100
                     af.append('aresample=44100')
-                af.append('asetrate=%d' % (asr * pitch))
+                asetrate = int(round(asr * pitch))
+                af.append(f'asetrate={asetrate}')
             tempo = self.tempo / pitch
             if tempo != 1.0:
                 while tempo > 2.0:
@@ -253,12 +256,13 @@ class Song(object):
                 while tempo < 0.5:
                     af.append('atempo=0.5')
                     tempo *= 2.0
-                af.append('atempo=%s' % float(tempo))
+                af.append(f'atempo={tempo}')
             if pitch != 1.0:
-                af.append('aresample=%d' % asr)
+                af.append(f'aresample={asr}')
         options = '-vn'
         if af:
-            options += ' -af "%s"' % ','.join(af)
+            af = ','.join(af)
+            options += f' -af "{af}"'
         loop = asyncio.get_event_loop()
         source = (await loop.run_in_executor(None, lambda: self.get_source(before_options, options, stderr, volume)))
         # Check for an error written to the stream
@@ -369,7 +373,7 @@ async def songs_from_search(query, user, start, maxn, search_key):
     ydl = yt_dlp.YoutubeDL(YTDL_OPTIONS)
     ydl.params['playliststart'] = start + 1
     ydl.params['playlistend'] = maxn
-    data = (await extract_info(ydl, '%s%d:%s' % (search_key, maxn, query)))
+    data = (await extract_info(ydl, f'{search_key}{maxn}:{query}'))
     del ydl.params['playliststart'], ydl.params['playlistend']
     entries = data['entries']
     songs = [Song(ydl, entry, user) for entry in entries]

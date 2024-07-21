@@ -1,31 +1,35 @@
 # Miscellaneous utilities
 
+import discord
 import sys
 import re
 import asyncio
 import logging
 import traceback
 
+ESC = discord.utils.escape_markdown
+
 
 def format_time(time):
+    time = int(round(time))
     if time < 0:
         time = 0
     if time < 3600:
-        return '%d:%.2d' % (time // 60, time % 60)
+        return f'{(time // 60):d}:{(time % 60):02d}'
     else:
-        return '%d:%.2d:%.2d' % (time // 3600, (time // 60) % 60, time % 60)
+        return f'{(time // 3600):d}:{((time // 60) % 60):02d}:{(time % 60):02d}'
 
 
 def format_user(user):
     str = user.name
     if getattr(user, 'nick', None):
-        str = '%s (%s)' % (user.nick, str)
+        str = f'{ESC(user.nick)} ({ESC(str)})'
     return str
 
 
 def format_link(song):
     if getattr(song, 'link', None):
-        return '[%s](%s)' % (song.name, song.link)
+        return f'[{ESC(song.name)}]({song.link})'
     else:
         return song.name
 
@@ -33,6 +37,13 @@ def format_link(song):
 def is_url(string):
     # return True if this string appears to be a valid website URL
     return bool(re.match(r'(https:|http:|www\.)\S*', string))
+
+
+def on_off(bool):
+    return 'on' if bool else 'off'
+
+def plural(n):
+    return '' if n == 1 else 's'
 
 
 def log_exception(error):
@@ -63,7 +74,7 @@ class DebugLock(asyncio.Lock):
 
     async def acquire(self):
         if self.debug:
-            logging.info('Mutex acquired in %s()' % caller_name())
+            logging.debug(f'Mutex acquired in {caller_name()}()')
         if self.timeout:
             await asyncio.wait_for(asyncio.Lock.acquire(self), timeout=self.timeout)
         else:
@@ -71,5 +82,5 @@ class DebugLock(asyncio.Lock):
 
     def release(self):
         if self.debug:
-            logging.info('Mutex released in %s()' % caller_name())
+            logging.debug(f'Mutex acquired in {caller_name()}()')
         asyncio.Lock.release(self)

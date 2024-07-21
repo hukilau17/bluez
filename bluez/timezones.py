@@ -12,7 +12,7 @@ try:
         for key in zoneinfo.available_timezones():
             if key.lower().endswith(name.lower().replace(' ', '_')):
                 return zoneinfo.ZoneInfo(key)
-        logging.warning('get_timezone() unable to find timezone matching "%s"; returning None' % name)
+        logging.warning(f'get_timezone() unable to find timezone matching "{name}"; returning None')
         return None
 
 
