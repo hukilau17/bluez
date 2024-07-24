@@ -24,6 +24,8 @@ MAX_TIME_VALUE = 36000000 # ffmpeg does not allow timestamps of 10000 hours or m
 MAX_INPUT_LENGTH = 30
 
 BLUEZ_DEBUG = bool(int(os.getenv('BLUEZ_DEBUG', '0')))
+BLUEZ_DOWNLOAD = bool(int(os.getenv('BLUEZ_DOWNLOAD', '0')))
+BLUEZ_DOWNLOAD_PATH = os.getenv('BLUEZ_DOWNLOAD_PATH')
 BLUEZ_PROXY = os.getenv('BLUEZ_PROXY', '')
 
 
@@ -55,6 +57,7 @@ YTDL_OPTIONS = {
     'source_address': '0.0.0.0',
     'noplaylist': True,
     'extract_flat': 'in_playlist',
+    'paths': ({'home': BLUEZ_DOWNLOAD_PATH} if BLUEZ_DOWNLOAD_PATH else {}),
 }
 
 
@@ -110,8 +113,11 @@ class Song(object):
             self.link = self.data.get('url')
         else:
             # this song has a URL loaded and ready to go
-            self.url = self.data['url']
             self.link = self.data.get('webpage_url', getattr(self, 'link', None))
+            if BLUEZ_DOWNLOAD:
+                self.url = self.data['requested_downloads'][0]['filepath']
+            else:
+                self.url = self.data['url']
 
 
 
@@ -136,7 +142,7 @@ class Song(object):
         if self.url is None:
             loop = asyncio.get_event_loop()
             try:
-                self.data = (await loop.run_in_executor(None, lambda: self.ydl.process_ie_result(self.data, download=False)))
+                self.data = (await loop.run_in_executor(None, lambda: self.ydl.process_ie_result(self.data, download=BLUEZ_DOWNLOAD)))
             except Exception as e:
                 self.error = e
             self.init()
@@ -217,7 +223,10 @@ class Song(object):
         await self.process()
         if self.error:
             return self.error
-        before_options = '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
+        if BLUEZ_DOWNLOAD:
+            before_options = ''
+        else:
+            before_options = '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
         self.tempo = get_adjusted_tempo(tempo, nightcore, slowed)
         if nightcore:
             # nightcore adjusts the pitch upward
@@ -313,7 +322,7 @@ class Playlist(list):
         # for it rather than delaying it till later).
         if 'entries' not in self.data:
             loop = asyncio.get_event_loop()
-            self.data = (await loop.run_in_executor(None, lambda: self.ydl.process_ie_result(self.data, download=False)))
+            self.data = (await loop.run_in_executor(None, lambda: self.ydl.process_ie_result(self.data, download=BLUEZ_DOWNLOAD)))
             self.init()
 
     
@@ -353,7 +362,7 @@ async def extract_info(ydl, url):
     # ask youtube-dl to get the info for a given URL or search query, running
     # the command in the asyncio event loop to avoid blocking.
     loop = asyncio.get_event_loop()
-    return (await loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False)))
+    return (await loop.run_in_executor(None, lambda: ydl.extract_info(url, download=BLUEZ_DOWNLOAD)))
 
 
 

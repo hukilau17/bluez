@@ -17,6 +17,7 @@ from bluez.util import *
 
 BLUEZ_DEBUG = bool(int(os.getenv('BLUEZ_DEBUG', '0')))
 BLUEZ_SETTINGS_PATH = os.getenv('BLUEZ_SETTINGS_PATH')
+BLUEZ_DOWNLOAD_PATH = os.getenv('BLUEZ_DOWNLOAD_PATH')
 
 MAX_HISTORY_LEN = 100
 
@@ -69,6 +70,15 @@ class Player(object):
         self.volume = self.defaultvolume
 
 
+    def clear_downloads(self):
+        if BLUEZ_DOWNLOAD_PATH:
+            try:
+                for filename in os.listdir(BLUEZ_DOWNLOAD_PATH):
+                    os.remove(os.path.join(BLUEZ_DOWNLOAD_PATH, filename))
+            except OSError:
+                pass
+
+
     def reset(self):
         self.text_channel = None
         self.voice_channel = None
@@ -89,6 +99,7 @@ class Player(object):
         self.seek_pos = None
         self.stderr = tempfile.TemporaryFile()
         self.reset_effects()
+        self.clear_downloads()
 
 
 
@@ -507,7 +518,7 @@ class Player(object):
                 strftime = timestamp.strftime('%x %X')
                 description += f'`{strftime}` {format_link(song)} | `Requested by {format_user(song.user)}`\n\n'
             embed.description = description
-            footer = f'Page {npage-i}/{npages}'
+            footer = f'Page {npages-i}/{npages}'
             embed.set_footer(text=footer,
                              icon_url=ctx.author.avatar.url)
             embeds.append(embed)

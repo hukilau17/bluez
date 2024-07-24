@@ -82,5 +82,5 @@ class DebugLock(asyncio.Lock):
 
     def release(self):
         if self.debug:
-            logging.debug(f'Mutex acquired in {caller_name()}()')
+            logging.debug(f'Mutex released in {caller_name()}()')
         asyncio.Lock.release(self)
